@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: diamond-kpi
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: diamond-kpi-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_ENV
+        value: production
+      - key: COMPANY_NAME
+        value: 晶鑽生醫
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SEED_DEMO_DATA
+        value: "true"
+
+databases:
+  - name: diamond-kpi-db
+    region: singapore
+    plan: free
+    databaseName: diamond_kpi
+    user: diamond_kpi
+    postgresMajorVersion: "17"
+    ipAllowList: []
