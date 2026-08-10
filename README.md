@@ -45,3 +45,11 @@ This release pins Render to Python 3.13 to keep the PostgreSQL binary driver com
 
 ## Render v4 compatibility fix
 Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.13. This prevents application startup failure caused by bcrypt 5.x enforcing the 72-byte limit during Passlib backend detection.
+
+## v8 UX cleanup
+- Sidebar de-duplicated: one entry each for Home, Sales, Customers, Products, CRM, KPI Rules.
+- Removed sales CSV import/export controls from the Sales page.
+- Home is the single KPI executive overview; redundant KPI Overview navigation removed.
+- Sales page combines create + list/edit in one place.
+- Customer page remains the single place for customer list, single create, and batch clinic import.
+- Fixed wrapping/truncation in Home > Sales KPI > 達成說明.

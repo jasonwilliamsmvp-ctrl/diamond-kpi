@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% block title %}業績管理 / KPI 總覽{% endblock %}
+{% block title %}首頁總覽{% endblock %}
 {% block subtitle %}Model C 菁英制 · 業績 KPI + CRM KPI + 晉升 / 淘汰自動判定{% endblock %}
 {% block content %}
 <div class="kpi-toolbar">
@@ -19,8 +19,8 @@
 <section class="kpi-grid">
   <div class="panel kpi-panel">
     <div class="panelhead"><h2>業績 KPI（每月）</h2><span>自動計算</span></div>
-    <table><thead><tr><th>KPI 指標</th><th>目標值</th><th>本月實際</th><th>達成率</th><th>狀態</th><th>達成說明</th></tr></thead><tbody>
-    {% for k in sales_kpis %}<tr><td><b>{{ k.name }}</b></td><td>{{ '{:,.0f}'.format(k.target/10000) ~ ' 萬' if k.unit=='元' else ('{:,.0f}'.format(k.target/10000) ~ ' 萬／人' if k.unit=='元／人' else ('%.0f'|format(k.target)) ~ ' ' ~ k.unit) }}</td><td>{{ '{:,.0f}'.format(k.actual/10000) ~ ' 萬' if k.unit=='元' else ('{:,.0f}'.format(k.actual/10000) ~ ' 萬／人' if k.unit=='元／人' else ('%.1f'|format(k.actual)) ~ ' ' ~ k.unit) }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(k.rate) }}%</b><div class="mini-bar"><i class="{{ k.light }}" style="width:{{ [k.rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ k.light }}">● {{ '達標' if k.light=='green' else '未達標' }}</span></td><td>{{ k.note }}</td></tr>{% endfor %}
+    <table class="sales-kpi-table"><thead><tr><th>KPI 指標</th><th>目標值</th><th>本月實際</th><th>達成率</th><th>狀態</th><th class="note-col">達成說明</th></tr></thead><tbody>
+    {% for k in sales_kpis %}<tr><td><b>{{ k.name }}</b></td><td>{{ '{:,.0f}'.format(k.target/10000) ~ ' 萬' if k.unit=='元' else ('{:,.0f}'.format(k.target/10000) ~ ' 萬／人' if k.unit=='元／人' else ('%.0f'|format(k.target)) ~ ' ' ~ k.unit) }}</td><td>{{ '{:,.0f}'.format(k.actual/10000) ~ ' 萬' if k.unit=='元' else ('{:,.0f}'.format(k.actual/10000) ~ ' 萬／人' if k.unit=='元／人' else ('%.1f'|format(k.actual)) ~ ' ' ~ k.unit) }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(k.rate) }}%</b><div class="mini-bar"><i class="{{ k.light }}" style="width:{{ [k.rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ k.light }}">● {{ '達標' if k.light=='green' else '未達標' }}</span></td><td class="note-cell">{{ k.note }}</td></tr>{% endfor %}
     </tbody></table>
   </div>
   <div class="panel kpi-panel">
