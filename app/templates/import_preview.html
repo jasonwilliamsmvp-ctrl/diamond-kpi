@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block content %}
+<section class="panel"><div class="panelhead"><h2>{{kind}}智慧匯入預覽</h2><a class="btnlink" href="javascript:history.back()">返回</a></div>
+{% set ok = checked|selectattr('errors','equalto',[])|list %}
+<div class="stats" style="margin:14px 0"><div class="stat"><small>總筆數</small><b>{{checked|length}}</b></div><div class="stat"><small>可匯入</small><b>{{ok|length}}</b></div><div class="stat"><small>錯誤</small><b>{{checked|length-ok|length}}</b></div></div>
+<p><small>系統已先驗證欄位、日期/數字格式，以及員工、產品、診所代碼。紅色資料不會匯入，請修正原檔後重新預覽。</small></p>
+<div style="overflow:auto"><table><thead><tr><th>列</th><th>資料</th><th>檢查結果</th></tr></thead><tbody>{% for r in checked %}<tr><td>{{r.line}}</td><td>{% for k,v in r.data.items() %}<b>{{k}}</b>: {{v}}{% if not loop.last %} ｜ {% endif %}{% endfor %}</td><td>{% if r.errors %}<span class="pill red">{{r.errors|join('；')}}</span>{% else %}<span class="pill green">可匯入</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+{% if ok|length %}<form method="post" action="{{confirm_url}}" style="margin-top:16px"><input type="hidden" name="token" value="{{token}}"><button type="submit">確認匯入 {{ok|length}} 筆正確資料</button></form>{% endif %}
+</section>{% endblock %}

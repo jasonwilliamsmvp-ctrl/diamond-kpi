@@ -3,15 +3,17 @@ import io
 import os
 from datetime import date, datetime
 from typing import Optional
+import json
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeSerializer, BadSignature
 from passlib.context import CryptContext
 from sqlalchemy import create_engine, String, Integer, Float, Date, DateTime, ForeignKey, Boolean, select, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session, sessionmaker
+from openpyxl import load_workbook
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/data/diamond_kpi.db")
@@ -412,19 +414,116 @@ def export_sales(db:Session=Depends(db_session),user:User=Depends(current_user))
     data=out.getvalue().encode("utf-8-sig")
     return StreamingResponse(io.BytesIO(data),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_sales.csv"})
 
-@app.post("/import/sales")
-async def import_sales(file:UploadFile=File(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+def _read_tabular_upload(filename: str, raw: bytes):
+    name=(filename or "").lower()
+    if name.endswith(".xlsx"):
+        wb=load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws=wb.active
+        values=list(ws.iter_rows(values_only=True))
+        if not values: return []
+        headers=[str(x).strip() if x is not None else "" for x in values[0]]
+        return [dict(zip(headers,row)) for row in values[1:] if any(v not in (None,"") for v in row)]
+    text=raw.decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(text)))
+
+def _norm(v):
+    return "" if v is None else str(v).strip()
+
+def _sales_validate(rows, db):
+    checked=[]
+    required=["日期","員工編號","產品代碼","診所代碼","數量","金額"]
+    for idx,row in enumerate(rows, start=2):
+        errors=[]
+        for k in required:
+            if _norm(row.get(k))=="": errors.append(f"缺少{k}")
+        emp=db.scalar(select(Employee).where(Employee.employee_no==_norm(row.get("員工編號")))) if _norm(row.get("員工編號")) else None
+        prod=db.scalar(select(Product).where(Product.code==_norm(row.get("產品代碼")))) if _norm(row.get("產品代碼")) else None
+        clinic=db.scalar(select(Clinic).where(Clinic.code==_norm(row.get("診所代碼")))) if _norm(row.get("診所代碼")) else None
+        if _norm(row.get("員工編號")) and not emp: errors.append("員工編號不存在")
+        if _norm(row.get("產品代碼")) and not prod: errors.append("產品代碼不存在")
+        if _norm(row.get("診所代碼")) and not clinic: errors.append("診所代碼不存在")
+        try: d=date.fromisoformat(_norm(row.get("日期")))
+        except: d=None; errors.append("日期格式需為 YYYY-MM-DD")
+        try: qty=float(row.get("數量",0)); assert qty>=0
+        except: qty=0; errors.append("數量格式錯誤")
+        try: amount=float(row.get("金額",0)); assert amount>=0
+        except: amount=0; errors.append("金額格式錯誤")
+        clean={"日期":_norm(row.get("日期")),"員工編號":_norm(row.get("員工編號")),"產品代碼":_norm(row.get("產品代碼")),"診所代碼":_norm(row.get("診所代碼")),"數量":qty,"金額":amount,"備註":_norm(row.get("備註"))}
+        checked.append({"line":idx,"data":clean,"errors":errors})
+    return checked
+
+def _clinics_validate(rows, db):
+    checked=[]; seen=set()
+    for idx,row in enumerate(rows,start=2):
+        code=_norm(row.get("客戶代碼")); name=_norm(row.get("診所名稱")); region=_norm(row.get("區域")); city=_norm(row.get("城市")); eno=_norm(row.get("負責業務員工編號")); status=_norm(row.get("狀態")) or "有效客戶"
+        errors=[]
+        if not code: errors.append("缺少客戶代碼")
+        if not name: errors.append("缺少診所名稱")
+        if region not in ["北區","中區","南區"]: errors.append("區域需為北區/中區/南區")
+        if not city: errors.append("缺少城市")
+        emp=db.scalar(select(Employee).where(Employee.employee_no==eno)) if eno else None
+        if eno and not emp: errors.append("負責業務員工編號不存在")
+        if not eno: errors.append("缺少負責業務員工編號")
+        if status not in ["有效客戶","潛在客戶","暫停交易"]: errors.append("狀態不正確")
+        if code and (db.scalar(select(Clinic).where(Clinic.code==code)) or code in seen): errors.append("客戶代碼重複")
+        seen.add(code)
+        checked.append({"line":idx,"data":{"客戶代碼":code,"診所名稱":name,"區域":region,"城市":city,"負責業務員工編號":eno,"狀態":status},"errors":errors})
+    return checked
+
+@app.get("/templates/sales-import.csv")
+def sales_template(user:User=Depends(current_user)):
+    text="日期,員工編號,產品代碼,診所代碼,數量,金額,備註\n2026-08-01,S001,METEORA,C001,2,800000,範例資料\n"
+    return Response(content=text.encode("utf-8-sig"),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_sales_import_template.csv"})
+
+@app.get("/templates/clinics-import.csv")
+def clinics_template(user:User=Depends(current_user)):
+    text="客戶代碼,診所名稱,區域,城市,負責業務員工編號,狀態\nC001,範例醫美診所,北區,台北市,S001,有效客戶\n"
+    return Response(content=text.encode("utf-8-sig"),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_clinics_import_template.csv"})
+
+@app.post("/import/sales/preview",response_class=HTMLResponse)
+async def import_sales_preview(request:Request,file:UploadFile=File(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive","manager")
-    raw=await file.read(); text=raw.decode("utf-8-sig"); reader=csv.DictReader(io.StringIO(text)); count=0
-    for row in reader:
-        emp=db.scalar(select(Employee).where(Employee.employee_no==row.get("員工編號")))
-        prod=db.scalar(select(Product).where(Product.code==row.get("產品代碼")))
-        clinic=db.scalar(select(Clinic).where(Clinic.code==row.get("診所代碼")))
-        if not (emp and prod and clinic): continue
-        amount=float(row.get("金額",0)); qty=float(row.get("數量",0)); d=date.fromisoformat(row.get("日期"))
-        db.add(Sale(sale_date=d,employee_id=emp.id,product_id=prod.id,clinic_id=clinic.id,quantity=qty,amount=amount,gross_profit=amount*prod.gross_margin,note=row.get("備註", ""))); count+=1
-    db.commit(); audit(db,user,"匯入","業績",f"{count} 筆")
+    try: rows=_read_tabular_upload(file.filename,await file.read())
+    except Exception as e: raise HTTPException(400,f"無法讀取檔案：{e}")
+    checked=_sales_validate(rows,db); token=signer.dumps({"kind":"sales","rows":[x["data"] for x in checked if not x["errors"]]})
+    return templates.TemplateResponse("import_preview.html",{"request":request,"user":user,"company":COMPANY_NAME,"kind":"業績","checked":checked,"token":token,"confirm_url":"/import/sales/confirm"})
+
+@app.post("/import/sales/confirm")
+def import_sales_confirm(token:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    try: payload=signer.loads(token)
+    except BadSignature: raise HTTPException(400,"匯入資料已失效")
+    if payload.get("kind")!="sales": raise HTTPException(400,"匯入類型錯誤")
+    count=0
+    for row in payload["rows"]:
+        emp=db.scalar(select(Employee).where(Employee.employee_no==row["員工編號"])); prod=db.scalar(select(Product).where(Product.code==row["產品代碼"])); clinic=db.scalar(select(Clinic).where(Clinic.code==row["診所代碼"]))
+        if not(emp and prod and clinic): continue
+        amount=float(row["金額"]); db.add(Sale(sale_date=date.fromisoformat(row["日期"]),employee_id=emp.id,product_id=prod.id,clinic_id=clinic.id,quantity=float(row["數量"]),amount=amount,gross_profit=amount*prod.gross_margin,note=row.get("備註",""))); count+=1
+    db.commit(); audit(db,user,"匯入","業績",f"{count} 筆（智慧匯入）")
     return RedirectResponse("/sales",303)
+
+@app.post("/import/clinics/preview",response_class=HTMLResponse)
+async def import_clinics_preview(request:Request,file:UploadFile=File(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    try: rows=_read_tabular_upload(file.filename,await file.read())
+    except Exception as e: raise HTTPException(400,f"無法讀取檔案：{e}")
+    checked=_clinics_validate(rows,db); token=signer.dumps({"kind":"clinics","rows":[x["data"] for x in checked if not x["errors"]]})
+    return templates.TemplateResponse("import_preview.html",{"request":request,"user":user,"company":COMPANY_NAME,"kind":"診所","checked":checked,"token":token,"confirm_url":"/import/clinics/confirm"})
+
+@app.post("/import/clinics/confirm")
+def import_clinics_confirm(token:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    try: payload=signer.loads(token)
+    except BadSignature: raise HTTPException(400,"匯入資料已失效")
+    if payload.get("kind")!="clinics": raise HTTPException(400,"匯入類型錯誤")
+    count=0
+    for row in payload["rows"]:
+        if db.scalar(select(Clinic).where(Clinic.code==row["客戶代碼"])): continue
+        emp=db.scalar(select(Employee).where(Employee.employee_no==row["負責業務員工編號"]))
+        if not emp: continue
+        db.add(Clinic(code=row["客戶代碼"],name=row["診所名稱"],region=row["區域"],city=row["城市"],owner_employee_id=emp.id,status=row["狀態"])); count+=1
+    db.commit(); audit(db,user,"匯入","診所",f"{count} 筆（智慧匯入）")
+    return RedirectResponse("/clinics",303)
 
 @app.get("/health")
 def health(): return {"status":"ok","time":datetime.utcnow().isoformat()}
