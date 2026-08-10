@@ -186,7 +186,7 @@ def startup():
             prods = [
                 Product(code="MET", name="METEORA", unit="盒", unit_price=120000, gross_margin=.72, monthly_target_qty=20),
                 Product(code="NEO", name="NeoFilera", unit="瓶", unit_price=80000, gross_margin=.75, monthly_target_qty=30),
-                Product(code="NVB", name="NovaBright", unit="盒", unit_price=0, gross_margin=.70, monthly_target_qty=0),
+                Product(code="NVB", name="NovaBright", unit="台", unit_price=0, gross_margin=.70, monthly_target_qty=0),
                 Product(code="RON", name="Ronkylä", unit="盒", unit_price=60000, gross_margin=.68, monthly_target_qty=50),
                 Product(code="PK", name="Pico-K", category="儀器", unit="台", unit_price=1500000, gross_margin=.55, monthly_target_qty=2),
                 Product(code="PT", name="探頭系列", category="耗材", unit="支", unit_price=25000, gross_margin=.65, monthly_target_qty=80),
@@ -208,7 +208,7 @@ def startup():
                 db.add(Activity(activity_date=today, employee_id=emps[i%len(emps)].id, clinic_id=clinics[i%len(clinics)].id, stage=st, outcome="示範資料"))
         # Ensure NovaBright is present even on an existing Render/PostgreSQL database.
         if not db.scalar(select(Product).where(Product.code == "NVB")):
-            db.add(Product(code="NVB", name="NovaBright", category="注射產品", unit="盒", unit_price=0, gross_margin=.70, monthly_target_qty=0, active=True))
+            db.add(Product(code="NVB", name="NovaBright", category="設備", unit="台", unit_price=0, gross_margin=.70, monthly_target_qty=0, active=True))
         db.commit()
     finally:
         db.close()
