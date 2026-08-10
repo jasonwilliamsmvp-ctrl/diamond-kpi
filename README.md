@@ -41,3 +41,7 @@ uvicorn app.main:app --reload
 
 ## Render runtime compatibility
 This release pins Render to Python 3.13 to keep the PostgreSQL binary driver compatible with the deployed dependency set.
+
+
+## Render v4 compatibility fix
+Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.13. This prevents application startup failure caused by bcrypt 5.x enforcing the 72-byte limit during Passlib backend detection.
