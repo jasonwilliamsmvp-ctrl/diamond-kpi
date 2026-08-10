@@ -33,3 +33,7 @@ uvicorn app.main:app --reload
 ## Health Check
 
 `GET /health`
+
+## 2026-08 update
+- Product KPI adds **NovaBright** (`NVB`). Existing databases will add it automatically on application startup. Initial target/price are 0 so management can set the official values without affecting current KPI calculations.
+- Sales records now have an **Edit** action. In the edit screen, **業務姓名** is a dropdown populated from active employees, so managers can select the salesperson directly instead of typing a name.

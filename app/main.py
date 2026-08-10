@@ -186,6 +186,7 @@ def startup():
             prods = [
                 Product(code="MET", name="METEORA", unit="盒", unit_price=120000, gross_margin=.72, monthly_target_qty=20),
                 Product(code="NEO", name="NeoFilera", unit="瓶", unit_price=80000, gross_margin=.75, monthly_target_qty=30),
+                Product(code="NVB", name="NovaBright", unit="盒", unit_price=0, gross_margin=.70, monthly_target_qty=0),
                 Product(code="RON", name="Ronkylä", unit="盒", unit_price=60000, gross_margin=.68, monthly_target_qty=50),
                 Product(code="PK", name="Pico-K", category="儀器", unit="台", unit_price=1500000, gross_margin=.55, monthly_target_qty=2),
                 Product(code="PT", name="探頭系列", category="耗材", unit="支", unit_price=25000, gross_margin=.65, monthly_target_qty=80),
@@ -205,6 +206,9 @@ def startup():
             stages=["拜訪","拜訪","提案","報價","成交","回購","拜訪","提案"]
             for i,st in enumerate(stages):
                 db.add(Activity(activity_date=today, employee_id=emps[i%len(emps)].id, clinic_id=clinics[i%len(clinics)].id, stage=st, outcome="示範資料"))
+        # Ensure NovaBright is present even on an existing Render/PostgreSQL database.
+        if not db.scalar(select(Product).where(Product.code == "NVB")):
+            db.add(Product(code="NVB", name="NovaBright", category="注射產品", unit="盒", unit_price=0, gross_margin=.70, monthly_target_qty=0, active=True))
         db.commit()
     finally:
         db.close()
@@ -308,6 +312,43 @@ def sale_add(sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=F
     c=db.get(Clinic,clinic_id)
     if c: c.last_order_date=sale_date
     db.commit(); audit(db,user,"新增","業績",f"金額 {amount:,.0f}")
+    return RedirectResponse("/sales",303)
+
+@app.get("/sales/{sid}/edit", response_class=HTMLResponse)
+def sale_edit_page(sid:int, request:Request, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    sale=db.get(Sale,sid)
+    if not sale:
+        raise HTTPException(404,"找不到業績資料")
+    emps=list(db.scalars(select(Employee).where(Employee.active==True).order_by(Employee.region,Employee.name)))
+    products=list(db.scalars(select(Product).where(Product.active==True).order_by(Product.name)))
+    clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name)))
+    return templates.TemplateResponse("sales_edit.html",{
+        "request":request,"user":user,"company":COMPANY_NAME,"sale":sale,
+        "employees":emps,"products":products,"clinics":clinics
+    })
+
+@app.post("/sales/{sid}/edit")
+def sale_edit(sid:int,sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=Form(...),clinic_id:int=Form(...),quantity:float=Form(...),amount:float=Form(...),status:str=Form("已認列"),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    sale=db.get(Sale,sid)
+    if not sale:
+        raise HTTPException(404,"找不到業績資料")
+    product=db.get(Product,product_id)
+    sale.sale_date=sale_date
+    sale.employee_id=employee_id
+    sale.product_id=product_id
+    sale.clinic_id=clinic_id
+    sale.quantity=quantity
+    sale.amount=amount
+    sale.gross_profit=amount*(product.gross_margin if product else 0)
+    sale.status=status
+    sale.note=note
+    clinic=db.get(Clinic,clinic_id)
+    if clinic:
+        clinic.last_order_date=sale_date
+    db.commit()
+    audit(db,user,"修改","業績",f"#{sid} 金額 {amount:,.0f}")
     return RedirectResponse("/sales",303)
 
 @app.post("/sales/{sid}/delete")
