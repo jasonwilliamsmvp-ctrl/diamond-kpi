@@ -1,5 +1,55 @@
-{% extends 'base.html' %}{% block title %}經營績效總覽{% endblock %}{% block content %}
-<section class="cards"><div class="card hero"><span>本月認列營收</span><strong>NT$ {{ '{:,.0f}'.format(revenue) }}</strong><div class="progress"><i style="width:{{ [rate,100]|min }}%"></i></div><small>目標 NT$ {{ '{:,.0f}'.format(target) }} · 達成 {{ '%.1f'|format(rate) }}%</small></div><div class="card"><span>月底預估</span><strong>NT$ {{ '{:,.0f}'.format(forecast) }}</strong><small class="{{ 'good' if forecast>=target else 'warn' }}">預估達成 {{ '%.1f'|format(forecast/target*100 if target else 0) }}%</small></div><div class="card"><span>毛利</span><strong>NT$ {{ '{:,.0f}'.format(gp) }}</strong><small>毛利率 {{ '%.1f'|format(margin) }}%</small></div><div class="card"><span>團隊人均產值</span><strong>NT$ {{ '{:,.0f}'.format(revenue/(by_emp|length) if by_emp else 0) }}</strong><small>{{ by_emp|length }} 位有效人員</small></div></section>
-<section class="grid2"><div class="panel"><div class="panelhead"><h2>區域業績</h2><span>本月</span></div><canvas id="regionChart" height="120"></canvas></div><div class="panel"><div class="panelhead"><h2>CRM 漏斗</h2><span>活動轉換</span></div><canvas id="funnelChart" height="120"></canvas></div></section>
-<section class="grid2"><div class="panel"><div class="panelhead"><h2>個人 KPI 排行榜</h2><a href="/employees">管理人員</a></div><table><thead><tr><th>#</th><th>姓名</th><th>職級/區域</th><th>業績</th><th>達成率</th></tr></thead><tbody>{% for r in by_emp %}<tr><td>{{ loop.index }}</td><td><b>{{ r.name }}</b></td><td>{{ r.title }} · {{ r.region }}</td><td>NT$ {{ '{:,.0f}'.format(r.amount) }}</td><td><span class="pill {{ 'green' if r.rate>=100 else 'orange' if r.rate>=80 else 'red' }}">{{ '%.1f'|format(r.rate) }}%</span></td></tr>{% endfor %}</tbody></table></div><div class="panel"><div class="panelhead"><h2>產品 KPI</h2><a href="/products">產品設定</a></div>{% for p in by_product %}<div class="metric"><div><b>{{ p.name }}</b><small>{{ p.qty|round(1) }} / {{ p.target|round(1) }}</small></div><div class="bar"><i style="width:{{ [p.rate,100]|min }}%"></i></div><span>{{ '%.0f'|format(p.rate) }}%</span></div>{% endfor %}</div></section>
-<script>new Chart(document.getElementById('regionChart'),{type:'bar',data:{labels:{{ regions|map(attribute='name')|list|tojson }},datasets:[{label:'營收',data:{{ regions|map(attribute='amount')|list|tojson }},borderRadius:8},{label:'目標',data:{{ regions|map(attribute='target')|list|tojson }},borderRadius:8}]},options:{responsive:true,plugins:{legend:{position:'bottom'}},scales:{y:{ticks:{callback:v=>'NT$'+(v/10000)+'萬'}}}}});new Chart(document.getElementById('funnelChart'),{type:'doughnut',data:{labels:{{ funnel.keys()|list|tojson }},datasets:[{data:{{ funnel.values()|list|tojson }},borderWidth:0}]},options:{plugins:{legend:{position:'bottom'}},cutout:'58%'}});</script>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}業績管理 / KPI 總覽{% endblock %}
+{% block subtitle %}Model C 菁英制 · 業績 KPI + CRM KPI + 晉升 / 淘汰自動判定{% endblock %}
+{% block content %}
+<div class="kpi-toolbar">
+  <div class="month-nav"><a href="/?month={{ prev_month }}">‹</a><strong>{{ month_start.year }} 年 {{ month_start.month }} 月</strong><a href="/?month={{ next_month }}">›</a></div>
+  <a class="btnlink" href="/export/kpi.csv?month={{ month_key }}">匯出 KPI 報表</a>
+</div>
+
+<section class="kpi-cards">
+  <div class="kpi-card"><span>本月團隊業績</span><strong>{{ '{:,.0f}'.format(revenue/10000) }} 萬</strong><small>目標 {{ '{:,.0f}'.format(target/10000) }} 萬</small><div class="ring-label {{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</div></div>
+  <div class="kpi-card"><span>團隊達成率</span><strong class="{{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</strong><small>距目標差 {{ '{:,.0f}'.format([target-revenue,0]|max/10000) }} 萬</small><div class="status-line {{ 'green' if rate>=100 else 'red' if rate<80 else 'yellow' }}">● {{ '達標' if rate>=100 else '未達標' }}</div></div>
+  <div class="kpi-card"><span>團隊人均產值</span><strong>{{ '{:,.0f}'.format(avg_value/10000) }} 萬 / 人</strong><small>目標 {{ '{:,.0f}'.format(avg_target/10000) }} 萬 / 人</small></div>
+  <div class="kpi-card"><span>CRM 完整度</span><strong class="{{ 'green-text' if crm_complete>=100 else 'red-text' if crm_complete<80 else 'yellow-text' }}">{{ '%.0f'|format(crm_complete) }}%</strong><small>目標 100%</small><div class="status-line {{ 'green' if crm_complete>=100 else 'red' if crm_complete<80 else 'yellow' }}">● {{ '達標' if crm_complete>=100 else '未達標' }}</div></div>
+  <div class="kpi-card"><span>新增有效下單診所</span><strong>{{ new_ordering }} 家</strong><small>目標 ≥ 2 家</small><div class="status-line {{ 'green' if new_ordering>=2 else 'red' }}">● {{ '達標' if new_ordering>=2 else '未達標' }}</div></div>
+  <div class="kpi-card"><span>客戶拜訪數</span><strong>{{ visits }} 家</strong><small>目標 ≥ 40 家</small><div class="status-line {{ 'green' if visits>=40 else 'red' }}">● {{ '達標' if visits>=40 else '未達標' }}</div></div>
+</section>
+
+<section class="kpi-grid">
+  <div class="panel kpi-panel">
+    <div class="panelhead"><h2>業績 KPI（每月）</h2><span>自動計算</span></div>
+    <table><thead><tr><th>KPI 指標</th><th>目標值</th><th>本月實際</th><th>達成率</th><th>狀態</th><th>達成說明</th></tr></thead><tbody>
+    {% for k in sales_kpis %}<tr><td><b>{{ k.name }}</b></td><td>{{ '{:,.0f}'.format(k.target/10000) ~ ' 萬' if k.unit=='元' else ('{:,.0f}'.format(k.target/10000) ~ ' 萬／人' if k.unit=='元／人' else ('%.0f'|format(k.target)) ~ ' ' ~ k.unit) }}</td><td>{{ '{:,.0f}'.format(k.actual/10000) ~ ' 萬' if k.unit=='元' else ('{:,.0f}'.format(k.actual/10000) ~ ' 萬／人' if k.unit=='元／人' else ('%.1f'|format(k.actual)) ~ ' ' ~ k.unit) }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(k.rate) }}%</b><div class="mini-bar"><i class="{{ k.light }}" style="width:{{ [k.rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ k.light }}">● {{ '達標' if k.light=='green' else '未達標' }}</span></td><td>{{ k.note }}</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+  <div class="panel kpi-panel">
+    <div class="panelhead"><h2>CRM KPI（每月）</h2><span>自動稽核</span></div>
+    <table><thead><tr><th>KPI 指標</th><th>目標值</th><th>本月實際</th><th>達成率</th><th>狀態</th></tr></thead><tbody>
+    {% for k in crm_kpis %}<tr><td><b>{{ k.name }}</b><small class="subnote">{{ k.note }}</small></td><td>{{ '%.0f'|format(k.target) }} {{ k.unit }}</td><td>{{ '%.1f'|format(k.actual) }} {{ k.unit }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(k.rate) }}%</b><div class="mini-bar"><i class="{{ k.light }}" style="width:{{ [k.rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ k.light }}">● {{ '達標' if k.light=='green' else '未達標' }}</span></td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</section>
+
+<section class="kpi-grid lower">
+  <div class="panel kpi-panel">
+    <div class="panelhead"><h2>個人 KPI 達成狀態（本月）</h2><span>{{ by_emp|length }} 人</span></div>
+    <table><thead><tr><th>員工</th><th>職級</th><th>業績達成率</th><th>CRM 完整度</th><th>綜合狀態</th><th>晉升 / 淘汰建議</th></tr></thead><tbody>
+    {% for r in by_emp %}<tr><td><b>{{ r.name }}</b><small class="subnote">{{ r.region }}</small></td><td>{{ r.title }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(r.revenue_rate) }}%</b><div class="mini-bar"><i class="{{ 'green' if r.revenue_rate>=100 else 'yellow' if r.revenue_rate>=80 else 'red' }}" style="width:{{ [r.revenue_rate,100]|min }}%"></i></div></div></td><td><div class="rate-cell"><b>{{ '%.0f'|format(r.crm_rate) }}%</b><div class="mini-bar"><i class="{{ 'green' if r.crm_rate>=100 else 'yellow' if r.crm_rate>=80 else 'red' }}" style="width:{{ [r.crm_rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ r.status }}">● {{ r.status_text }}</span></td><td><b>{{ r.action }}</b><small class="subnote">連續達標 {{ r.achieved_months }} 月 · 連續未達標 {{ r.missed_months }} 月</small></td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+  <div class="panel kpi-panel policy-panel">
+    <div class="panelhead"><h2>KPI 晉升 / 淘汰制度（Model C：菁英制）</h2><span>制度引擎</span></div>
+    <table><thead><tr><th>職級</th><th>每月業績門檻</th><th>晉升條件</th><th>未達標處置</th></tr></thead><tbody>
+      <tr><td><span class="rank r5">協理</span></td><td>團隊 ≥ 5,000 萬</td><td>連續 3 個月達標 → 高績效獎勵</td><td rowspan="5"><b>連續 2 個月未達標</b> → 黃牌輔導<br><b>連續 3 個月未達標</b> → 降職／調整職位<br><b>降職後連續 2 個月未達標</b> → 淘汰評估<br><b>表現優異</b> → 晉升與獎勵</td></tr>
+      <tr><td><span class="rank r4">區域經理</span></td><td>團隊 ≥ 1,500 萬</td><td>連續 3 個月達標 → 晉升協理</td></tr>
+      <tr><td><span class="rank r3">襄理</span></td><td>個人 ≥ 250 萬</td><td>連續 3 個月達標 → 晉升區域經理</td></tr>
+      <tr><td><span class="rank r2">主任</span></td><td>個人 ≥ 180 萬</td><td>連續 3 個月達標 → 晉升襄理</td></tr>
+      <tr><td><span class="rank r1">專員</span></td><td>個人 ≥ 100 萬</td><td>連續 3 個月達標 → 晉升主任</td></tr>
+    </tbody></table>
+    <div class="legend"><span class="lamp green">● 綠燈：達標</span><span class="lamp yellow">● 黃燈：未達標但可改善</span><span class="lamp red">● 紅燈：嚴重未達標 / 需輔導</span></div>
+  </div>
+</section>
+
+{% if warning_count %}<div class="warning-banner"><span>⚠</span><div><b>本月共有 {{ warning_count }} 位同仁進入紅燈警示</b><small>請儘速進行輔導與改善，避免連續未達標觸發降職 / 淘汰流程。</small></div><a href="#coaching">查看輔導名單</a></div>{% elif yellow_count %}<div class="warning-banner yellow-banner"><span>!</span><div><b>本月共有 {{ yellow_count }} 位同仁為黃燈</b><small>建議主管進行目標差距追蹤。</small></div></div>{% endif %}
+{% endblock %}

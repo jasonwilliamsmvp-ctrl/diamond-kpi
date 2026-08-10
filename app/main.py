@@ -4,6 +4,7 @@ import os
 from datetime import date, datetime
 from typing import Optional
 import json
+import calendar
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse, Response
@@ -245,43 +246,192 @@ def logout():
     r=RedirectResponse("/login",303); r.delete_cookie("diamond_session"); return r
 
 
-def dashboard_context(db: Session, user: User):
-    month_start = date.today().replace(day=1)
-    sales_query = select(Sale).where(Sale.sale_date >= month_start)
-    if user.role in ("manager", "sales"):
-        sales_query = sales_query.join(Employee).where(Employee.region == user.region)
-    sales = list(db.scalars(sales_query))
-    revenue=sum(s.amount for s in sales); gp=sum(s.gross_profit for s in sales)
-    emps=list(db.scalars(select(Employee).where(Employee.active == True)))
+def _parse_month(month: Optional[str]):
+    try:
+        if month:
+            y, m = [int(x) for x in month.split("-")]
+            return date(y, m, 1)
+    except Exception:
+        pass
+    return date.today().replace(day=1)
+
+
+def _month_end(month_start: date):
+    return date(month_start.year, month_start.month, calendar.monthrange(month_start.year, month_start.month)[1])
+
+
+def _shift_month(month_start: date, delta: int):
+    idx = month_start.year * 12 + (month_start.month - 1) + delta
+    return date(idx // 12, idx % 12 + 1, 1)
+
+
+def _pct(actual, target):
+    return (actual / target * 100) if target else 0
+
+
+def _light(rate: float, hard_red: bool = False):
+    if hard_red or rate < 80:
+        return "red"
+    if rate < 100:
+        return "yellow"
+    return "green"
+
+
+def _title_target(title: str):
+    return {
+        "專員": 1_000_000,
+        "主任": 1_800_000,
+        "襄理": 2_500_000,
+        "區域經理": 15_000_000,
+        "協理": 50_000_000,
+    }.get(title, 1_000_000)
+
+
+def _promotion_text(title: str):
+    order=["專員","主任","襄理","區域經理","協理"]
+    if title not in order or title == "協理":
+        return "維持職級 / 高績效獎勵"
+    return f"可晉升 {order[order.index(title)+1]}"
+
+
+def _employee_month_rate(db: Session, e: Employee, month_start: date):
+    month_end=_month_end(month_start)
+    amt=db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
+        Sale.employee_id==e.id, Sale.sale_date>=month_start, Sale.sale_date<=month_end
+    )) or 0
+    target=e.monthly_target or _title_target(e.title)
+    return float(amt), _pct(float(amt), float(target))
+
+
+def _consecutive_status(db: Session, e: Employee, month_start: date):
+    achieved=0; missed=0
+    for i in range(0, 6):
+        m=_shift_month(month_start,-i)
+        _, rate=_employee_month_rate(db,e,m)
+        if i == 0:
+            current_rate=rate
+        if rate >= 100:
+            if missed == 0: achieved += 1
+            else: break
+        else:
+            if achieved == 0: missed += 1
+            else: break
+    return achieved, missed, current_rate
+
+
+def kpi_context(db: Session, user: User, month: Optional[str] = None):
+    month_start=_parse_month(month)
+    month_end=_month_end(month_start)
+    month_key=month_start.strftime("%Y-%m")
+    sales_query=select(Sale).where(Sale.sale_date>=month_start, Sale.sale_date<=month_end)
+    if user.role in ("manager","sales"):
+        sales_query=sales_query.join(Employee).where(Employee.region==user.region)
+    sales=list(db.scalars(sales_query))
+
+    emps=list(db.scalars(select(Employee).where(Employee.active==True)))
     if user.role in ("manager","sales"):
         emps=[e for e in emps if e.region==user.region]
-    target=sum(e.monthly_target for e in emps)
+
+    revenue=sum(s.amount for s in sales)
+    gp=sum(s.gross_profit for s in sales)
+    target=sum((e.monthly_target or _title_target(e.title)) for e in emps)
+    rate=_pct(revenue,target)
+    avg_value=revenue/len(emps) if emps else 0
+    avg_target=(target/len(emps)) if emps else 0
+
+    activities_q=select(Activity).where(Activity.activity_date>=month_start, Activity.activity_date<=month_end)
+    if user.role in ("manager","sales"):
+        activities_q=activities_q.join(Employee).where(Employee.region==user.region)
+    activities=list(db.scalars(activities_q))
+    visits=sum(1 for a in activities if a.stage=="拜訪")
+    completed=sum(1 for a in activities if (a.outcome or '').strip() and a.next_action_date is not None)
+    crm_complete=_pct(completed,len(activities)) if activities else 0
+
+    # New effective ordering clinics = clinics whose first recorded sale falls inside selected month.
+    new_ordering=0
+    relevant_clinic_ids={s.clinic_id for s in sales}
+    for cid in relevant_clinic_ids:
+        first=db.scalar(select(func.min(Sale.sale_date)).where(Sale.clinic_id==cid))
+        if first and month_start <= first <= month_end:
+            new_ordering += 1
+
+    # New product introductions = first-ever clinic-product pair occurring this month.
+    intro_pairs=set()
+    for s in sales:
+        first=db.scalar(select(func.min(Sale.sale_date)).where(Sale.clinic_id==s.clinic_id, Sale.product_id==s.product_id))
+        if first and month_start <= first <= month_end:
+            intro_pairs.add((s.clinic_id,s.product_id))
+    new_product_intro=len({cid for cid,_ in intro_pairs})
+
+    sales_kpis=[
+        {"name":"團隊業績","target":target,"actual":revenue,"unit":"元","rate":rate,"light":_light(rate),"note":f"距目標差 {max(target-revenue,0):,.0f} 元" if rate<100 else "已達成團隊目標"},
+        {"name":"團隊人均產值","target":avg_target,"actual":avg_value,"unit":"元／人","rate":_pct(avg_value,avg_target),"light":_light(_pct(avg_value,avg_target)),"note":f"共 {len(emps)} 位有效人員"},
+        {"name":"管理幅度","target":8,"actual":len([e for e in emps if e.title in ['專員','主任','襄理']]),"unit":"人","rate":min(_pct(len([e for e in emps if e.title in ['專員','主任','襄理']]),8),100),"light":"green" if len([e for e in emps if e.title in ['專員','主任','襄理']])<=8 else "yellow","note":"建議每位主管管理幅度 ≤ 8 人"},
+        {"name":"高毛利回報","target":70,"actual":(gp/revenue*100 if revenue else 0),"unit":"%","rate":_pct((gp/revenue*100 if revenue else 0),70),"light":_light(_pct((gp/revenue*100 if revenue else 0),70)),"note":"以整體毛利率 70% 作為管理基準"},
+    ]
+    crm_kpis=[
+        {"name":"新增有效下單診所","target":2,"actual":new_ordering,"unit":"家","rate":_pct(new_ordering,2),"light":_light(_pct(new_ordering,2)),"note":"目標 ≥ 2 家／月"},
+        {"name":"客戶拜訪數","target":40,"actual":visits,"unit":"家","rate":_pct(visits,40),"light":_light(_pct(visits,40)),"note":"目標 ≥ 40 家／月"},
+        {"name":"新品導入數","target":1,"actual":new_product_intro,"unit":"家","rate":_pct(new_product_intro,1),"light":_light(_pct(new_product_intro,1)),"note":"首次 clinic-product 組合視為新品導入"},
+        {"name":"CRM 完整度","target":100,"actual":crm_complete,"unit":"%","rate":crm_complete,"light":_light(crm_complete),"note":"結果 + 下一步日期皆填寫才算完整"},
+    ]
+
     by_emp=[]
     for e in emps:
-        amt=sum(s.amount for s in sales if s.employee_id==e.id)
-        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":e.monthly_target,"rate":(amt/e.monthly_target*100 if e.monthly_target else 0)})
-    by_emp.sort(key=lambda x:x["rate"], reverse=True)
-    products=list(db.scalars(select(Product).where(Product.active == True)))
-    by_product=[]
-    for p in products:
-        qty=sum(s.quantity for s in sales if s.product_id==p.id); amt=sum(s.amount for s in sales if s.product_id==p.id)
-        by_product.append({"name":p.name,"qty":qty,"target":p.monthly_target_qty,"amount":amt,"rate":qty/p.monthly_target_qty*100 if p.monthly_target_qty else 0})
-    activities=list(db.scalars(select(Activity).where(Activity.activity_date>=month_start)))
-    funnel={stage:sum(1 for a in activities if a.stage==stage) for stage in ["拜訪","提案","報價","成交","回購"]}
-    regions=[]
-    for r in ["北區","中區","南區"]:
-        rs=[s for s in sales if s.employee.region==r]; rt=sum(e.monthly_target for e in emps if e.region==r)
-        regions.append({"name":r,"amount":sum(s.amount for s in rs),"target":rt,"rate":sum(s.amount for s in rs)/rt*100 if rt else 0})
-    return {"revenue":revenue,"gp":gp,"margin":gp/revenue*100 if revenue else 0,"target":target,"rate":revenue/target*100 if target else 0,"forecast":revenue/max(date.today().day,1)*30,"by_emp":by_emp,"by_product":by_product,"funnel":funnel,"regions":regions}
+        emp_sales=[s for s in sales if s.employee_id==e.id]
+        amt=sum(s.amount for s in emp_sales)
+        target_e=e.monthly_target or _title_target(e.title)
+        rev_rate=_pct(amt,target_e)
+        emp_acts=[a for a in activities if a.employee_id==e.id]
+        emp_crm=_pct(sum(1 for a in emp_acts if (a.outcome or '').strip() and a.next_action_date is not None),len(emp_acts)) if emp_acts else 0
+        achieved,missed,_=_consecutive_status(db,e,month_start)
+        if achieved>=3:
+            status="green"; status_text="綠燈"; action=_promotion_text(e.title)
+        elif missed>=3:
+            status="red"; status_text="紅燈"; action="降職／調整職位"
+        elif missed>=2:
+            status="red"; status_text="紅燈"; action="黃牌輔導；次月未改善進入淘汰評估"
+        elif rev_rate<80 or emp_crm<80:
+            status="red"; status_text="紅燈"; action="立即輔導改善"
+        elif rev_rate<100 or emp_crm<100:
+            status="yellow"; status_text="黃燈"; action="持續觀察"
+        else:
+            status="green"; status_text="綠燈"; action="達標"
+        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"status":status,"status_text":status_text,"action":action,"achieved_months":achieved,"missed_months":missed})
+    by_emp.sort(key=lambda x:(x["status"]!="red", x["revenue_rate"]))
+
+    warning_count=sum(1 for r in by_emp if r["status"]=="red")
+    yellow_count=sum(1 for r in by_emp if r["status"]=="yellow")
+    prev_month=_shift_month(month_start,-1).strftime("%Y-%m")
+    next_month=_shift_month(month_start,1).strftime("%Y-%m")
+    return {
+        "month_start":month_start,"month_key":month_key,"prev_month":prev_month,"next_month":next_month,
+        "revenue":revenue,"target":target,"rate":rate,"gp":gp,"margin":gp/revenue*100 if revenue else 0,
+        "avg_value":avg_value,"avg_target":avg_target,"crm_complete":crm_complete,"new_ordering":new_ordering,"visits":visits,
+        "sales_kpis":sales_kpis,"crm_kpis":crm_kpis,"by_emp":by_emp,"warning_count":warning_count,"yellow_count":yellow_count,
+    }
+
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, db: Session=Depends(db_session), user: User=Depends(current_user)):
-    ctx=dashboard_context(db,user)
+def dashboard(request: Request, month: Optional[str]=None, db: Session=Depends(db_session), user: User=Depends(current_user)):
+    ctx=kpi_context(db,user,month)
     return templates.TemplateResponse("dashboard.html", {"request":request,"user":user,"company":COMPANY_NAME,**ctx})
 
+
 @app.get("/api/dashboard")
-def api_dashboard(db: Session=Depends(db_session), user: User=Depends(current_user)):
-    return dashboard_context(db,user)
+def api_dashboard(month: Optional[str]=None, db: Session=Depends(db_session), user: User=Depends(current_user)):
+    return kpi_context(db,user,month)
+
+
+@app.get("/export/kpi.csv")
+def export_kpi(month: Optional[str]=None, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    ctx=kpi_context(db,user,month)
+    out=io.StringIO(); w=csv.writer(out)
+    w.writerow(["月份","員工","職級","區域","業績目標","實際業績","業績達成率","CRM完整度","燈號","連續達標月","連續未達標月","管理建議"])
+    for r in ctx["by_emp"]:
+        w.writerow([ctx["month_key"],r["name"],r["title"],r["region"],r["target"],r["amount"],round(r["revenue_rate"],1),round(r["crm_rate"],1),r["status_text"],r["achieved_months"],r["missed_months"],r["action"]])
+    data=out.getvalue().encode("utf-8-sig")
+    return StreamingResponse(io.BytesIO(data),media_type="text/csv",headers={"Content-Disposition":f"attachment; filename=diamond_kpi_{ctx['month_key']}.csv"})
 
 @app.get("/employees", response_class=HTMLResponse)
 def employees_page(request:Request, db:Session=Depends(db_session), user:User=Depends(current_user)):
