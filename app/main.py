@@ -414,7 +414,7 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
             status="yellow"; status_text="黃燈"; action="持續觀察"
         else:
             status="green"; status_text="綠燈"; action="達標"
-        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":emp_crm_target,"status":status,"status_text":status_text,"action":action,"achieved_months":achieved,"missed_months":missed})
+        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":(e.crm_target if e.crm_target is not None else 100),"status":status,"status_text":status_text,"action":action,"achieved_months":achieved,"missed_months":missed})
     by_emp.sort(key=lambda x:(x["status"]!="red", x["revenue_rate"]))
 
     warning_count=sum(1 for r in by_emp if r["status"]=="red")
