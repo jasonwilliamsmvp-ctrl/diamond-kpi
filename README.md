@@ -53,3 +53,8 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 - Sales page combines create + list/edit in one place.
 - Customer page remains the single place for customer list, single create, and batch clinic import.
 - Fixed wrapping/truncation in Home > Sales KPI > 達成說明.
+
+## v9 更新
+- KPI 規則與職級頁新增「員工 KPI 目標管理」，可逐人設定月業績、CRM 完整度、拜訪數、新增有效診所、新品導入目標。
+- 既有 Render PostgreSQL 啟動時自動補齊 KPI 欄位，不需刪除資料庫。
+- 首頁 KPI 表格與晉升/淘汰區塊改為可換行與橫向捲動，避免文字被切掉。

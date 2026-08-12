@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeSerializer, BadSignature
 from passlib.context import CryptContext
-from sqlalchemy import create_engine, String, Integer, Float, Date, DateTime, ForeignKey, Boolean, select, func
+from sqlalchemy import create_engine, String, Integer, Float, Date, DateTime, ForeignKey, Boolean, select, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session, sessionmaker
 from openpyxl import load_workbook
 
@@ -56,6 +56,10 @@ class Employee(Base):
     region: Mapped[str] = mapped_column(String(30), default="北區")
     manager: Mapped[str] = mapped_column(String(100), default="")
     monthly_target: Mapped[float] = mapped_column(Float, default=1000000)
+    crm_target: Mapped[float] = mapped_column(Float, default=100)
+    visit_target: Mapped[float] = mapped_column(Float, default=40)
+    new_clinic_target: Mapped[float] = mapped_column(Float, default=2)
+    new_product_target: Mapped[float] = mapped_column(Float, default=1)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 class Product(Base):
@@ -164,6 +168,19 @@ async def unauthorized(request: Request, exc):
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(engine)
+    # Lightweight schema migration for existing Render/PostgreSQL databases.
+    # create_all() does not add new columns to an existing table.
+    with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS crm_target DOUBLE PRECISION DEFAULT 100"))
+            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS visit_target DOUBLE PRECISION DEFAULT 40"))
+            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS new_clinic_target DOUBLE PRECISION DEFAULT 2"))
+            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS new_product_target DOUBLE PRECISION DEFAULT 1"))
+        elif engine.dialect.name == "sqlite":
+            cols = {r[1] for r in conn.execute(text("PRAGMA table_info(employees)"))}
+            for col, default in [("crm_target",100),("visit_target",40),("new_clinic_target",2),("new_product_target",1)]:
+                if col not in cols:
+                    conn.execute(text(f"ALTER TABLE employees ADD COLUMN {col} FLOAT DEFAULT {default}"))
     db = SessionLocal()
     try:
         if not db.scalar(select(func.count(User.id))):
@@ -397,7 +414,7 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
             status="yellow"; status_text="黃燈"; action="持續觀察"
         else:
             status="green"; status_text="綠燈"; action="達標"
-        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"status":status,"status_text":status_text,"action":action,"achieved_months":achieved,"missed_months":missed})
+        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":emp_crm_target,"status":status,"status_text":status_text,"action":action,"achieved_months":achieved,"missed_months":missed})
     by_emp.sort(key=lambda x:(x["status"]!="red", x["revenue_rate"]))
 
     warning_count=sum(1 for r in by_emp if r["status"]=="red")
@@ -439,10 +456,19 @@ def employees_page(request:Request, db:Session=Depends(db_session), user:User=De
     return templates.TemplateResponse("employees.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows})
 
 @app.post("/employees")
-def employee_add(employee_no:str=Form(...),name:str=Form(...),title:str=Form(...),region:str=Form(...),manager:str=Form(""),monthly_target:float=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+def employee_add(employee_no:str=Form(...),name:str=Form(...),title:str=Form(...),region:str=Form(...),manager:str=Form(""),monthly_target:float=Form(...),crm_target:float=Form(100),visit_target:float=Form(40),new_clinic_target:float=Form(2),new_product_target:float=Form(1),db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive")
-    db.add(Employee(employee_no=employee_no,name=name,title=title,region=region,manager=manager,monthly_target=monthly_target)); db.commit(); audit(db,user,"新增","員工",f"{employee_no} {name}")
+    db.add(Employee(employee_no=employee_no,name=name,title=title,region=region,manager=manager,monthly_target=monthly_target,crm_target=crm_target,visit_target=visit_target,new_clinic_target=new_clinic_target,new_product_target=new_product_target)); db.commit(); audit(db,user,"新增","員工",f"{employee_no} {name}")
     return RedirectResponse("/employees",303)
+
+@app.post("/employees/{eid}/kpi")
+def employee_kpi_update(eid:int, monthly_target:float=Form(...), crm_target:float=Form(...), visit_target:float=Form(...), new_clinic_target:float=Form(...), new_product_target:float=Form(...), db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    e=db.get(Employee,eid)
+    if not e: raise HTTPException(404)
+    e.monthly_target=max(monthly_target,0); e.crm_target=min(max(crm_target,0),100); e.visit_target=max(visit_target,0); e.new_clinic_target=max(new_clinic_target,0); e.new_product_target=max(new_product_target,0)
+    db.commit(); audit(db,user,"更新KPI","員工",f"{e.employee_no} {e.name} 業績={e.monthly_target}, CRM={e.crm_target}%, 拜訪={e.visit_target}, 新診所={e.new_clinic_target}, 新品={e.new_product_target}")
+    return RedirectResponse("/employees?saved=1",303)
 
 @app.post("/employees/{eid}/delete")
 def employee_delete(eid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
