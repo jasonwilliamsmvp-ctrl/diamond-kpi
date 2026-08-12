@@ -11,3 +11,28 @@
 
 /* v9: KPI target management + prevent dashboard text clipping */
 main,.kpi-grid,.kpi-grid>*{min-width:0}.kpi-panel{min-width:0}.kpi-panel table{table-layout:auto}.kpi-panel table td,.kpi-panel table th{white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word;overflow-wrap:anywhere;line-height:1.45}.kpi-panel .rate-cell{min-width:105px}.kpi-grid.lower .kpi-panel:first-child table{min-width:720px}.kpi-grid.lower .policy-panel table{min-width:680px}.policy-panel td,.policy-panel th{white-space:normal!important}.table-scroll{width:100%;overflow-x:auto}.target-table{min-width:1120px}.target-table td,.target-table th{white-space:normal;vertical-align:middle}.target-input{display:flex;align-items:center;gap:5px;min-width:125px}.target-input input{margin:0;min-width:80px;padding:8px}.target-input span{font-size:11px;color:var(--muted);white-space:nowrap}.save-ok{margin-bottom:14px;padding:12px 15px;border:1px solid #bfe6d3;background:#ecf9f3;color:#15734f;border-radius:9px;font-weight:700;font-size:13px}.sales-kpi-table{min-width:720px}.sales-kpi-table .note-cell{min-width:180px!important;max-width:none!important}.subnote{overflow-wrap:anywhere}
+
+
+/* v11: dashboard readability / no clipped KPI text */
+.kpi-panel .table-scroll{width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}
+.kpi-panel .table-scroll table{width:100%}
+.individual-kpi-table{min-width:880px}
+.individual-kpi-table th:nth-child(1){min-width:105px}
+.individual-kpi-table th:nth-child(2){min-width:85px}
+.individual-kpi-table th:nth-child(3),.individual-kpi-table th:nth-child(4){min-width:135px}
+.individual-kpi-table th:nth-child(5){min-width:95px}
+.individual-kpi-table th:nth-child(6){min-width:220px}
+.individual-kpi-table td:last-child{white-space:normal!important;min-width:220px;text-align:left!important;line-height:1.55}
+.policy-table{min-width:820px}
+.policy-table th:nth-child(1){min-width:110px}.policy-table th:nth-child(2){min-width:160px}.policy-table th:nth-child(3){min-width:220px}.policy-table th:nth-child(4){min-width:300px}
+.sales-kpi-table{min-width:900px}
+.sales-kpi-table th:nth-child(6),.sales-kpi-table td:nth-child(6){min-width:220px}
+.kpi-panel td,.kpi-panel th{vertical-align:middle}
+@media(max-width:1650px){
+  .kpi-grid,.kpi-grid.lower{grid-template-columns:1fr}
+}
+@media(max-width:900px){
+  .kpi-panel .panelhead{align-items:flex-start;gap:8px}
+  .individual-kpi-table{min-width:820px}
+  .sales-kpi-table{min-width:860px}
+}
