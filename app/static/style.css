@@ -36,3 +36,5 @@ main,.kpi-grid,.kpi-grid>*{min-width:0}.kpi-panel{min-width:0}.kpi-panel table{t
   .individual-kpi-table{min-width:820px}
   .sales-kpi-table{min-width:860px}
 }
+
+#coaching{scroll-margin-top:24px}.coaching-row{background:#fff7f7}.coaching-row td:first-child{border-left:4px solid #d92732}.warning-banner a{cursor:pointer;display:inline-block}.warning-banner a:hover{filter:brightness(1.08)}
