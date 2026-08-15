@@ -311,13 +311,68 @@ def _promotion_text(title: str):
     return f"可晉升 {order[order.index(title)+1]}"
 
 
+def _team_member_ids(db: Session, e: Employee):
+    """Return the employee IDs that belong to a manager's KPI team.
+
+    Prefer the explicit manager hierarchy. If the hierarchy is incomplete,
+    regional managers fall back to their region and a top-level 協理 falls
+    back to all active employees. The manager's own sales are included.
+    """
+    if e.title not in ("區域經理", "協理"):
+        return [e.id]
+
+    active=list(db.scalars(select(Employee).where(Employee.active==True)))
+    by_manager={}
+    for emp in active:
+        key=(emp.manager or "").strip()
+        if key:
+            by_manager.setdefault(key, []).append(emp)
+
+    ids={e.id}
+    queue=[e.name]
+    seen_names=set()
+    while queue:
+        manager_name=queue.pop(0)
+        if manager_name in seen_names:
+            continue
+        seen_names.add(manager_name)
+        for child in by_manager.get(manager_name, []):
+            if child.id not in ids:
+                ids.add(child.id)
+                queue.append(child.name)
+
+    # Fallback for legacy data where reporting lines were not completely maintained.
+    if len(ids) == 1:
+        if e.title == "區域經理":
+            ids.update(emp.id for emp in active if emp.region == e.region)
+        elif e.title == "協理":
+            ids.update(emp.id for emp in active)
+    return list(ids)
+
+
 def _employee_month_rate(db: Session, e: Employee, month_start: date):
     month_end=_month_end(month_start)
+    member_ids=_team_member_ids(db,e)
     amt=db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
-        Sale.employee_id==e.id, Sale.sale_date>=month_start, Sale.sale_date<=month_end
+        Sale.employee_id.in_(member_ids), Sale.sale_date>=month_start, Sale.sale_date<=month_end
     )) or 0
     target=e.monthly_target or _title_target(e.title)
     return float(amt), _pct(float(amt), float(target))
+
+
+def _scope_team_target(emps):
+    """Pick one non-overlapping target layer for the current dashboard scope.
+
+    This prevents double counting the same organization by adding 協理、區經理、
+    襄理、主任、專員 thresholds together. We use the highest managerial layer
+    that exists in the current scope, and only fall back to individual targets
+    when no team manager exists.
+    """
+    for title in ("協理", "區域經理"):
+        managers=[e for e in emps if e.title == title]
+        if managers:
+            return sum(float(e.monthly_target or _title_target(e.title)) for e in managers)
+    return sum(float(e.monthly_target or _title_target(e.title)) for e in emps)
 
 
 def _consecutive_status(db: Session, e: Employee, month_start: date):
@@ -351,7 +406,9 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
 
     revenue=sum(s.amount for s in sales)
     gp=sum(s.gross_profit for s in sales)
-    target=sum((e.monthly_target or _title_target(e.title)) for e in emps)
+    # Team target uses only one organizational layer to avoid double counting
+    # managerial team thresholds together with subordinate individual thresholds.
+    target=_scope_team_target(emps)
     rate=_pct(revenue,target)
     avg_value=revenue/len(emps) if emps else 0
     avg_target=(target/len(emps)) if emps else 0
@@ -395,9 +452,13 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
 
     by_emp=[]
     for e in emps:
-        emp_sales=[s for s in sales if s.employee_id==e.id]
-        amt=sum(s.amount for s in emp_sales)
         target_e=e.monthly_target or _title_target(e.title)
+        if e.title in ("協理", "區域經理"):
+            team_ids=set(_team_member_ids(db,e))
+            emp_sales=[s for s in sales if s.employee_id in team_ids]
+        else:
+            emp_sales=[s for s in sales if s.employee_id==e.id]
+        amt=sum(s.amount for s in emp_sales)
         rev_rate=_pct(amt,target_e)
         emp_acts=[a for a in activities if a.employee_id==e.id]
         emp_crm=_pct(sum(1 for a in emp_acts if (a.outcome or '').strip() and a.next_action_date is not None),len(emp_acts)) if emp_acts else 0
