@@ -6,6 +6,7 @@
 <a class="{{ 'active' if request.url.path.startswith('/products') else '' }}" href="/products">◈　產品管理</a>
 <a class="{{ 'active' if request.url.path.startswith('/activities') else '' }}" href="/activities">♧　CRM / 業務管理</a>
 <a class="{{ 'active' if request.url.path.startswith('/employees') else '' }}" href="/employees">♢　KPI 規則與職級</a>
+{% if user.role in ['admin','executive'] %}<a class="{{ 'active' if request.url.path.startswith('/kpi-actions') else '' }}" href="/kpi-actions">✓　KPI 處置審核</a>{% endif %}
 {% if user.role=='admin' %}<a class="{{ 'active' if request.url.path.startswith('/users') else '' }}" href="/users">⚙　帳號與權限</a>{% endif %}
 {% if user.role in ['admin','executive'] %}<a class="{{ 'active' if request.url.path.startswith('/audit') else '' }}" href="/audit">▥　稽核紀錄</a>{% endif %}
 </nav><div class="sidefoot light-foot"><small>目前使用者</small><div><b>{{ user.full_name }}</b></div><small>{{ user.role }} · {{ user.region }}</small><a href="/logout">登出</a></div></aside>

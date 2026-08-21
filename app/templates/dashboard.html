@@ -35,15 +35,15 @@
   <div class="panel kpi-panel" id="coaching">
     <div class="panelhead"><h2>個人 KPI 達成狀態（本月）</h2><span>{{ by_emp|length }} 人</span></div>
     <div class="table-scroll"><table class="individual-kpi-table"><thead><tr><th>員工</th><th>職級</th><th>業績達成率</th><th>CRM 完整度</th><th>綜合狀態</th><th>晉升 / 淘汰建議</th></tr></thead><tbody>
-    {% for r in by_emp %}<tr class="{{ 'coaching-row' if r.status=='red' else '' }}"><td><b>{{ r.name }}</b><small class="subnote">{{ r.region }}</small></td><td>{{ r.title }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(r.revenue_rate) }}%</b><div class="mini-bar"><i class="{{ 'green' if r.revenue_rate>=100 else 'yellow' if r.revenue_rate>=80 else 'red' }}" style="width:{{ [r.revenue_rate,100]|min }}%"></i></div></div></td><td><div class="rate-cell"><b>{{ '%.0f'|format(r.crm_rate) }}%</b><div class="mini-bar"><i class="{{ 'green' if r.crm_rate>=100 else 'yellow' if r.crm_rate>=80 else 'red' }}" style="width:{{ [r.crm_rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ r.status }}">● {{ r.status_text }}</span></td><td><b>{{ r.action }}</b><small class="subnote">連續達標 {{ r.achieved_months }} 月 · 連續未達標 {{ r.missed_months }} 月</small></td></tr>{% endfor %}
+    {% for r in by_emp %}<tr class="{{ 'coaching-row' if r.status=='red' else '' }}"><td><b>{{ r.name }}</b><small class="subnote">{{ r.region }}</small></td><td>{{ r.title }}</td><td><div class="rate-cell"><b>{{ '%.0f'|format(r.revenue_rate) }}%</b><div class="mini-bar"><i class="{{ 'green' if r.revenue_rate>=100 else 'yellow' if r.revenue_rate>=80 else 'red' }}" style="width:{{ [r.revenue_rate,100]|min }}%"></i></div></div></td><td><div class="rate-cell"><b>{{ '%.0f'|format(r.crm_rate) }}%</b><div class="mini-bar"><i class="{{ 'green' if r.crm_rate>=100 else 'yellow' if r.crm_rate>=80 else 'red' }}" style="width:{{ [r.crm_rate,100]|min }}%"></i></div></div></td><td><span class="lamp {{ r.status }}">● {{ r.status_text }}</span></td><td><b>{{ r.action }}</b><small class="subnote">連續達標 {{ r.achieved_months }} 月 · 連續未達標 {{ r.missed_months }} 月</small>{% if r.action_type and user.role in ['admin','executive'] %}<form method="post" action="/kpi-actions/generate/{{ r.id }}" class="inline-action"><input type="hidden" name="month" value="{{ month_key }}"><button type="submit" class="tiny-btn">建立待審核處置</button></form>{% endif %}</td></tr>{% endfor %}
     </tbody></table></div>
   </div>
   <div class="panel kpi-panel policy-panel">
     <div class="panelhead"><h2>KPI 晉升 / 淘汰制度（Model C：菁英制）</h2><span>制度引擎</span></div>
     <div class="table-scroll"><table class="policy-table"><thead><tr><th>職級</th><th>每月業績門檻</th><th>晉升條件</th><th>未達標處置</th></tr></thead><tbody>
-      <tr><td><span class="rank r5">協理</span></td><td>團隊 ≥ 5,000 萬</td><td>連續 3 個月達標 → 高績效獎勵</td><td rowspan="5"><b>連續 2 個月未達標</b> → 黃牌輔導<br><b>連續 3 個月未達標</b> → 降職／調整職位<br><b>降職後連續 2 個月未達標</b> → 淘汰評估<br><b>表現優異</b> → 晉升與獎勵</td></tr>
-      <tr><td><span class="rank r4">區域經理</span></td><td>團隊 ≥ 1,500 萬</td><td>連續 3 個月達標 → 晉升協理</td></tr>
-      <tr><td><span class="rank r3">襄理</span></td><td>個人 ≥ 250 萬</td><td>連續 3 個月達標 → 晉升區域經理</td></tr>
+      <tr><td><span class="rank r5">協理</span></td><td>團隊 ≥ 5,000 萬</td><td>—</td><td rowspan="5"><b>連續 2 個月未達標</b> → 黃牌輔導<br><b>連續 3 個月未達標</b> → 建議降一職等／調整職位<br><b>降職後持續未達標</b> → 淘汰評估<br><b>所有職級處置</b> → 均需主管核准後才生效</td></tr>
+      <tr><td><span class="rank r4">區域經理</span></td><td>區域團隊 ≥ 1,500 萬</td><td>—</td></tr>
+      <tr><td><span class="rank r3">襄理</span></td><td>個人 ≥ 250 萬</td><td>—</td></tr>
       <tr><td><span class="rank r2">主任</span></td><td>個人 ≥ 180 萬</td><td>連續 3 個月達標 → 晉升襄理</td></tr>
       <tr><td><span class="rank r1">專員</span></td><td>個人 ≥ 100 萬</td><td>連續 3 個月達標 → 晉升主任</td></tr>
     </tbody></table></div>

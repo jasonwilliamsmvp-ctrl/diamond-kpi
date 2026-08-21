@@ -114,6 +114,21 @@ class Activity(Base):
     employee: Mapped[Employee] = relationship()
     clinic: Mapped[Clinic] = relationship()
 
+class KPIAction(Base):
+    __tablename__ = "kpi_actions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    month_key: Mapped[str] = mapped_column(String(7), index=True)
+    action_type: Mapped[str] = mapped_column(String(30))  # promotion / demotion / elimination / coaching
+    from_title: Mapped[str] = mapped_column(String(30), default="")
+    to_title: Mapped[str] = mapped_column(String(30), default="")
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str] = mapped_column(String(80), default="")
+    employee: Mapped[Employee] = relationship()
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -304,11 +319,21 @@ def _title_target(title: str):
     }.get(title, 1_000_000)
 
 
-def _promotion_text(title: str):
-    order=["專員","主任","襄理","區域經理","協理"]
-    if title not in order or title == "協理":
-        return "維持職級 / 高績效獎勵"
-    return f"可晉升 {order[order.index(title)+1]}"
+def _promotion_title(title: str):
+    # Only the two promotion paths explicitly retained in the policy.
+    return {"專員":"主任", "主任":"襄理"}.get(title)
+
+
+def _demotion_title(title: str):
+    return {"協理":"區域經理", "區域經理":"襄理", "襄理":"主任", "主任":"專員"}.get(title)
+
+
+def _latest_approved_demotion(db: Session, employee_id: int):
+    return db.scalar(select(KPIAction).where(
+        KPIAction.employee_id==employee_id,
+        KPIAction.action_type=="demotion",
+        KPIAction.status=="approved"
+    ).order_by(KPIAction.decided_at.desc(), KPIAction.id.desc()))
 
 
 def _team_member_ids(db: Session, e: Employee):
@@ -424,13 +449,18 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
     sales_kpis=[
         {"name":"團隊業績","target":target,"actual":revenue,"unit":"元","rate":rate,"light":_light(rate),"note":f"距目標差 {max(target-revenue,0):,.0f} 元" if rate<100 else "已達成團隊目標"},
         {"name":"團隊人均產值","target":avg_target,"actual":avg_value,"unit":"元／人","rate":_pct(avg_value,avg_target),"light":_light(_pct(avg_value,avg_target)),"note":f"共 {len(emps)} 位有效人員"},
-        {"name":"管理幅度","target":8,"actual":len([e for e in emps if e.title in ['專員','主任','襄理']]),"unit":"人","rate":min(_pct(len([e for e in emps if e.title in ['專員','主任','襄理']]),8),100),"light":"green" if len([e for e in emps if e.title in ['專員','主任','襄理']])<=8 else "yellow","note":"建議每位主管管理幅度 ≤ 8 人"},
         {"name":"高毛利回報","target":70,"actual":(gp/revenue*100 if revenue else 0),"unit":"%","rate":_pct((gp/revenue*100 if revenue else 0),70),"light":_light(_pct((gp/revenue*100 if revenue else 0),70)),"note":"以整體毛利率 70% 作為管理基準"},
     ]
+    # CRM headline KPIs are company/authorized-scope totals across all field sales staff,
+    # not a single employee's target. Aggregate both actuals and targets consistently.
+    field_sales=[e for e in emps if e.title in ("專員","主任","襄理","區域經理")]
+    total_new_clinic_target=sum(float(e.new_clinic_target or 0) for e in field_sales)
+    total_visit_target=sum(float(e.visit_target or 0) for e in field_sales)
+    total_new_product_target=sum(float(e.new_product_target or 0) for e in field_sales)
     crm_kpis=[
-        {"name":"新增有效下單診所","target":2,"actual":new_ordering,"unit":"家","rate":_pct(new_ordering,2),"light":_light(_pct(new_ordering,2)),"note":"目標 ≥ 2 家／月"},
-        {"name":"客戶拜訪數","target":40,"actual":visits,"unit":"家","rate":_pct(visits,40),"light":_light(_pct(visits,40)),"note":"目標 ≥ 40 家／月"},
-        {"name":"新品導入數","target":1,"actual":new_product_intro,"unit":"家","rate":_pct(new_product_intro,1),"light":_light(_pct(new_product_intro,1)),"note":"首次 clinic-product 組合視為新品導入"},
+        {"name":"新增有效下單診所","target":total_new_clinic_target,"actual":new_ordering,"unit":"家","rate":_pct(new_ordering,total_new_clinic_target),"light":_light(_pct(new_ordering,total_new_clinic_target)),"note":f"全部業務累積；目標為 {len(field_sales)} 位業務個別目標加總"},
+        {"name":"客戶拜訪數","target":total_visit_target,"actual":visits,"unit":"次","rate":_pct(visits,total_visit_target),"light":_light(_pct(visits,total_visit_target)),"note":f"全部業務累積拜訪；目標為 {len(field_sales)} 位業務個別目標加總"},
+        {"name":"新品導入數","target":total_new_product_target,"actual":new_product_intro,"unit":"家","rate":_pct(new_product_intro,total_new_product_target),"light":_light(_pct(new_product_intro,total_new_product_target)),"note":"全部業務累積；首次 clinic-product 組合視為新品導入"},
         {"name":"CRM 完整度","target":100,"actual":crm_complete,"unit":"%","rate":crm_complete,"light":_light(crm_complete),"note":"結果 + 下一步日期皆填寫才算完整"},
     ]
 
@@ -447,19 +477,31 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
         emp_acts=[a for a in activities if a.employee_id==e.id]
         emp_crm=_pct(sum(1 for a in emp_acts if (a.outcome or '').strip() and a.next_action_date is not None),len(emp_acts)) if emp_acts else 0
         achieved,missed,_=_consecutive_status(db,e,month_start)
-        if achieved>=3:
-            status="green"; status_text="綠燈"; action=_promotion_text(e.title)
-        elif missed>=3:
-            status="red"; status_text="紅燈"; action="降職／調整職位"
+        action_type=None; to_title=""
+        last_demotion=_latest_approved_demotion(db,e.id)
+        # Employment actions are recommendations only. An authorized human must approve
+        # them on the KPI action review page before any title/status is changed.
+        if missed>=3:
+            status="red"; status_text="紅燈"
+            if last_demotion and missed>=2:
+                action="降職後持續未達標 → 淘汰評估（待主管核准）"; action_type="elimination"
+            else:
+                lower=_demotion_title(e.title)
+                if lower:
+                    action=f"建議降職為 {lower}（待主管核准）"; action_type="demotion"; to_title=lower
+                else:
+                    action="最低職級持續未達標 → 淘汰評估（待主管核准）"; action_type="elimination"
         elif missed>=2:
-            status="red"; status_text="紅燈"; action="黃牌輔導；次月未改善進入淘汰評估"
+            status="red"; status_text="紅燈"; action="黃牌輔導；次月未改善進入降職／淘汰評估"; action_type="coaching"
         elif rev_rate<80 or emp_crm<80:
-            status="red"; status_text="紅燈"; action="立即輔導改善"
+            status="red"; status_text="紅燈"; action="立即輔導改善"; action_type="coaching"
+        elif achieved>=3 and _promotion_title(e.title):
+            status="green"; status_text="綠燈"; to_title=_promotion_title(e.title); action=f"符合晉升 {to_title} 條件（待主管核准）"; action_type="promotion"
         elif rev_rate<100 or emp_crm<100:
             status="yellow"; status_text="黃燈"; action="持續觀察"
         else:
-            status="green"; status_text="綠燈"; action="達標"
-        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":(e.crm_target if e.crm_target is not None else 100),"status":status,"status_text":status_text,"action":action,"achieved_months":achieved,"missed_months":missed})
+            status="green"; status_text="綠燈"; action="達標 / 維持現職"
+        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":(e.crm_target if e.crm_target is not None else 100),"status":status,"status_text":status_text,"action":action,"action_type":action_type,"to_title":to_title,"achieved_months":achieved,"missed_months":missed})
     by_emp.sort(key=lambda x:(x["status"]!="red", x["revenue_rate"]))
 
     warning_count=sum(1 for r in by_emp if r["status"]=="red")
@@ -494,6 +536,53 @@ def export_kpi(month: Optional[str]=None, db:Session=Depends(db_session), user:U
         w.writerow([ctx["month_key"],r["name"],r["title"],r["region"],r["target"],r["amount"],round(r["revenue_rate"],1),round(r["crm_rate"],1),r["status_text"],r["achieved_months"],r["missed_months"],r["action"]])
     data=out.getvalue().encode("utf-8-sig")
     return StreamingResponse(io.BytesIO(data),media_type="text/csv",headers={"Content-Disposition":f"attachment; filename=diamond_kpi_{ctx['month_key']}.csv"})
+
+@app.get("/kpi-actions", response_class=HTMLResponse)
+def kpi_actions_page(request:Request, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    rows=list(db.scalars(select(KPIAction).order_by(KPIAction.created_at.desc(), KPIAction.id.desc()).limit(300)))
+    return templates.TemplateResponse("kpi_actions.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows})
+
+@app.post("/kpi-actions/generate/{eid}")
+def kpi_action_generate(eid:int, month:str=Form(...), db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    e=db.get(Employee,eid)
+    if not e: raise HTTPException(404)
+    ctx=kpi_context(db,user,month)
+    row=next((r for r in ctx["by_emp"] if r["id"]==eid),None)
+    if not row or not row.get("action_type"):
+        return RedirectResponse(f"/?month={month}",303)
+    existing=db.scalar(select(KPIAction).where(KPIAction.employee_id==eid,KPIAction.month_key==month,KPIAction.action_type==row["action_type"],KPIAction.status=="pending"))
+    if not existing:
+        db.add(KPIAction(employee_id=eid,month_key=month,action_type=row["action_type"],from_title=e.title,to_title=row.get("to_title") or "",reason=row["action"],status="pending"))
+        db.commit(); audit(db,user,"建立待審核處置","KPI",f"{e.name} {month} {row['action']}")
+    return RedirectResponse("/kpi-actions",303)
+
+@app.post("/kpi-actions/{aid}/approve")
+def kpi_action_approve(aid:int, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    a=db.get(KPIAction,aid)
+    if not a or a.status!="pending": raise HTTPException(404)
+    e=db.get(Employee,a.employee_id)
+    if not e: raise HTTPException(404)
+    if a.action_type in ("promotion","demotion") and a.to_title:
+        e.title=a.to_title
+        e.monthly_target=_title_target(a.to_title)
+    elif a.action_type=="elimination":
+        e.active=False
+    # coaching is an acknowledged management action; no grade/status change.
+    a.status="approved"; a.decided_at=datetime.utcnow(); a.decided_by=user.username
+    db.commit(); audit(db,user,"核准KPI處置","KPI",f"{e.name} {a.action_type} {a.from_title}->{a.to_title}")
+    return RedirectResponse("/kpi-actions",303)
+
+@app.post("/kpi-actions/{aid}/reject")
+def kpi_action_reject(aid:int, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    a=db.get(KPIAction,aid)
+    if not a or a.status!="pending": raise HTTPException(404)
+    a.status="rejected"; a.decided_at=datetime.utcnow(); a.decided_by=user.username
+    db.commit(); audit(db,user,"駁回KPI處置","KPI",f"action#{aid}")
+    return RedirectResponse("/kpi-actions",303)
 
 @app.get("/employees", response_class=HTMLResponse)
 def employees_page(request:Request, db:Session=Depends(db_session), user:User=Depends(current_user)):

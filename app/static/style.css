@@ -38,3 +38,5 @@ main,.kpi-grid,.kpi-grid>*{min-width:0}.kpi-panel{min-width:0}.kpi-panel table{t
 }
 
 #coaching{scroll-margin-top:24px}.coaching-row{background:#fff7f7}.coaching-row td:first-child{border-left:4px solid #d92732}.warning-banner a{cursor:pointer;display:inline-block}.warning-banner a:hover{filter:brightness(1.08)}
+
+.inline-action{margin-top:8px}.tiny-btn{padding:7px 10px;border:0;border-radius:8px;background:#162f5b;color:#fff;font-weight:700;cursor:pointer}.tiny-btn.secondary{background:#eef2f7;color:#25364d}.action-stack{display:flex;gap:6px;flex-wrap:wrap}.note-cell{white-space:normal;min-width:240px}
