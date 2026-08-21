@@ -312,42 +312,25 @@ def _promotion_text(title: str):
 
 
 def _team_member_ids(db: Session, e: Employee):
-    """Return the employee IDs that belong to a manager's KPI team.
+    """Return the exact KPI sales scope for each position.
 
-    Prefer the explicit manager hierarchy. If the hierarchy is incomplete,
-    regional managers fall back to their region and a top-level 協理 falls
-    back to all active employees. The manager's own sales are included.
+    KPI policy:
+    - 協理：全團隊（所有啟用中的業務人員）業績。
+    - 區域經理：該區域全部啟用中人員的團隊業績。
+    - 襄理／主任／專員：只計本人個人業績。
+
+    This intentionally does NOT depend on the optional ``manager`` reporting-line
+    field, because KPI achievement for 協理／區域經理 is defined by organization
+    scope rather than by whether every reporting relationship has been maintained.
     """
     if e.title not in ("區域經理", "協理"):
         return [e.id]
 
     active=list(db.scalars(select(Employee).where(Employee.active==True)))
-    by_manager={}
-    for emp in active:
-        key=(emp.manager or "").strip()
-        if key:
-            by_manager.setdefault(key, []).append(emp)
-
-    ids={e.id}
-    queue=[e.name]
-    seen_names=set()
-    while queue:
-        manager_name=queue.pop(0)
-        if manager_name in seen_names:
-            continue
-        seen_names.add(manager_name)
-        for child in by_manager.get(manager_name, []):
-            if child.id not in ids:
-                ids.add(child.id)
-                queue.append(child.name)
-
-    # Fallback for legacy data where reporting lines were not completely maintained.
-    if len(ids) == 1:
-        if e.title == "區域經理":
-            ids.update(emp.id for emp in active if emp.region == e.region)
-        elif e.title == "協理":
-            ids.update(emp.id for emp in active)
-    return list(ids)
+    if e.title == "協理":
+        return [emp.id for emp in active]
+    # 區域經理：只計其所屬區域的整體團隊業績。
+    return [emp.id for emp in active if emp.region == e.region]
 
 
 def _employee_month_rate(db: Session, e: Employee, month_start: date):
@@ -356,6 +339,7 @@ def _employee_month_rate(db: Session, e: Employee, month_start: date):
     amt=db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
         Sale.employee_id.in_(member_ids), Sale.sale_date>=month_start, Sale.sale_date<=month_end
     )) or 0
+    # Manager targets are team thresholds; individual titles use personal thresholds.
     target=e.monthly_target or _title_target(e.title)
     return float(amt), _pct(float(amt), float(target))
 
