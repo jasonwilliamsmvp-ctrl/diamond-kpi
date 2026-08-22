@@ -12,8 +12,8 @@
   <div class="kpi-card"><span>團隊達成率</span><strong class="{{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</strong><small>距目標差 {{ '{:,.0f}'.format([target-revenue,0]|max/10000) }} 萬</small><div class="status-line {{ 'green' if rate>=100 else 'red' if rate<80 else 'yellow' }}">● {{ '達標' if rate>=100 else '未達標' }}</div></div>
   <div class="kpi-card"><span>團隊人均產值</span><strong>{{ '{:,.0f}'.format(avg_value/10000) }} 萬 / 人</strong><small>目標 {{ '{:,.0f}'.format(avg_target/10000) }} 萬 / 人</small></div>
   <div class="kpi-card"><span>CRM 完整度</span><strong class="{{ 'green-text' if crm_complete>=100 else 'red-text' if crm_complete<80 else 'yellow-text' }}">{{ '%.0f'|format(crm_complete) }}%</strong><small>目標 100%</small><div class="status-line {{ 'green' if crm_complete>=100 else 'red' if crm_complete<80 else 'yellow' }}">● {{ '達標' if crm_complete>=100 else '未達標' }}</div></div>
-  <div class="kpi-card"><span>新增有效下單診所</span><strong>{{ new_ordering }} 家</strong><small>目標 ≥ 2 家</small><div class="status-line {{ 'green' if new_ordering>=2 else 'red' }}">● {{ '達標' if new_ordering>=2 else '未達標' }}</div></div>
-  <div class="kpi-card"><span>客戶拜訪數</span><strong>{{ visits }} 家</strong><small>目標 ≥ 40 家</small><div class="status-line {{ 'green' if visits>=40 else 'red' }}">● {{ '達標' if visits>=40 else '未達標' }}</div></div>
+  <div class="kpi-card"><span>新增有效下單診所</span><strong>{{ new_ordering }} 家</strong><small>目標 {{ '%.0f'|format(crm_kpis[0].target) }} 家</small><div class="status-line {{ 'green' if crm_kpis[0].rate>=100 else 'red' if crm_kpis[0].rate<80 else 'yellow' }}">● {{ '達標' if crm_kpis[0].rate>=100 else '未達標' }}</div></div>
+  <div class="kpi-card"><span>客戶拜訪數</span><strong>{{ visits }} 次</strong><small>目標 {{ '%.0f'|format(crm_kpis[1].target) }} 次</small><div class="status-line {{ 'green' if crm_kpis[1].rate>=100 else 'red' if crm_kpis[1].rate<80 else 'yellow' }}">● {{ '達標' if crm_kpis[1].rate>=100 else '未達標' }}</div></div>
 </section>
 
 <section class="kpi-grid">
@@ -41,8 +41,8 @@
   <div class="panel kpi-panel policy-panel">
     <div class="panelhead"><h2>KPI 晉升 / 淘汰制度（Model C：菁英制）</h2><span>制度引擎</span></div>
     <div class="table-scroll"><table class="policy-table"><thead><tr><th>職級</th><th>每月業績門檻</th><th>晉升條件</th><th>未達標處置</th></tr></thead><tbody>
-      <tr><td><span class="rank r5">協理</span></td><td>團隊 ≥ 5,000 萬</td><td>—</td><td rowspan="5"><b>連續 2 個月未達標</b> → 黃牌輔導<br><b>連續 3 個月未達標</b> → 建議降一職等／調整職位<br><b>降職後持續未達標</b> → 淘汰評估<br><b>所有職級處置</b> → 均需主管核准後才生效</td></tr>
-      <tr><td><span class="rank r4">區域經理</span></td><td>區域團隊 ≥ 1,500 萬</td><td>—</td></tr>
+      <tr><td><span class="rank r5">協理</span></td><td>全公司專員＋主任＋襄理個人目標加總</td><td>—</td><td rowspan="5"><b>連續 2 個月未達標</b> → 黃牌輔導<br><b>連續 3 個月未達標</b> → 建議降一職等／調整職位<br><b>降職後持續未達標</b> → 淘汰評估<br><b>所有職級處置</b> → 均需主管核准後才生效</td></tr>
+      <tr><td><span class="rank r4">區域經理</span></td><td>該區專員＋主任＋襄理個人目標加總</td><td>—</td></tr>
       <tr><td><span class="rank r3">襄理</span></td><td>個人 ≥ 250 萬</td><td>—</td></tr>
       <tr><td><span class="rank r2">主任</span></td><td>個人 ≥ 180 萬</td><td>連續 3 個月達標 → 晉升襄理</td></tr>
       <tr><td><span class="rank r1">專員</span></td><td>個人 ≥ 100 萬</td><td>連續 3 個月達標 → 晉升主任</td></tr>

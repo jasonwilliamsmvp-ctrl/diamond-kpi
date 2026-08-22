@@ -58,3 +58,10 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 - KPI 規則與職級頁新增「員工 KPI 目標管理」，可逐人設定月業績、CRM 完整度、拜訪數、新增有效診所、新品導入目標。
 - 既有 Render PostgreSQL 啟動時自動補齊 KPI 欄位，不需刪除資料庫。
 - 首頁 KPI 表格與晉升/淘汰區塊改為可換行與橫向捲動，避免文字被切掉。
+
+## v16 KPI target logic update
+- Company/team monthly sales target = sum of active 專員 + 主任 + 襄理 personal monthly targets.
+- 協理 sales achievement = company/team sales by 專員 + 主任 + 襄理 ÷ that summed company/team target.
+- 區域經理 sales achievement = same-region sales by 專員 + 主任 + 襄理 ÷ same-region summed personal targets.
+- 區域經理 / 協理 no longer use fixed 1,500萬 / 5,000萬 sales thresholds and their sales target is read-only/dynamically calculated in KPI management.
+- Team average output uses the same 專員 + 主任 + 襄理 population to keep numerator, denominator, and headcount consistent.

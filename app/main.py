@@ -211,8 +211,8 @@ def startup():
             db.add_all(users)
         if not db.scalar(select(func.count(Employee.id))):
             emps = [
-                Employee(employee_no="E001", name="陳協理", title="協理", region="全區", monthly_target=50000000),
-                Employee(employee_no="E101", name="王區經理", title="區域經理", region="北區", monthly_target=15000000),
+                Employee(employee_no="E001", name="陳協理", title="協理", region="全區", monthly_target=0),
+                Employee(employee_no="E101", name="王區經理", title="區域經理", region="北區", monthly_target=0),
                 Employee(employee_no="E201", name="林襄理", title="襄理", region="北區", manager="王區經理", monthly_target=2500000),
                 Employee(employee_no="E202", name="張主任", title="主任", region="中區", manager="陳協理", monthly_target=1800000),
                 Employee(employee_no="E203", name="李專員", title="專員", region="南區", manager="陳協理", monthly_target=1000000),
@@ -309,14 +309,30 @@ def _light(rate: float, hard_red: bool = False):
     return "green"
 
 
+FIELD_SALES_TITLES = ("專員", "主任", "襄理")
+MANAGER_TITLES = ("區域經理", "協理")
+
 def _title_target(title: str):
+    # Only individual-contributor grades have a fixed personal default target.
+    # 區域經理／協理 targets are calculated dynamically from their teams.
     return {
         "專員": 1_000_000,
         "主任": 1_800_000,
         "襄理": 2_500_000,
-        "區域經理": 15_000_000,
-        "協理": 50_000_000,
-    }.get(title, 1_000_000)
+    }.get(title, 0)
+
+def _personal_target(e: Employee):
+    return float(e.monthly_target or _title_target(e.title) or 0)
+
+def _sales_contributors(emps, region: Optional[str] = None):
+    rows=[e for e in emps if e.active and e.title in FIELD_SALES_TITLES]
+    if region is not None:
+        rows=[e for e in rows if e.region == region]
+    return rows
+
+def _dynamic_team_target_from_emps(emps, region: Optional[str] = None):
+    """Team target = sum of personal targets of 專員＋主任＋襄理 only."""
+    return sum(_personal_target(e) for e in _sales_contributors(emps, region))
 
 
 def _promotion_title(title: str):
@@ -337,52 +353,42 @@ def _latest_approved_demotion(db: Session, employee_id: int):
 
 
 def _team_member_ids(db: Session, e: Employee):
-    """Return the exact KPI sales scope for each position.
+    """Return the sales contributors used for KPI achievement.
 
-    KPI policy:
-    - 協理：全團隊（所有啟用中的業務人員）業績。
-    - 區域經理：該區域全部啟用中人員的團隊業績。
-    - 襄理／主任／專員：只計本人個人業績。
-
-    This intentionally does NOT depend on the optional ``manager`` reporting-line
-    field, because KPI achievement for 協理／區域經理 is defined by organization
-    scope rather than by whether every reporting relationship has been maintained.
+    Policy:
+    - 協理：全公司所有啟用中的 專員＋主任＋襄理。
+    - 區域經理：該區所有啟用中的 專員＋主任＋襄理。
+    - 襄理／主任／專員：只計本人。
     """
-    if e.title not in ("區域經理", "協理"):
+    if e.title not in MANAGER_TITLES:
         return [e.id]
-
     active=list(db.scalars(select(Employee).where(Employee.active==True)))
-    if e.title == "協理":
-        return [emp.id for emp in active]
-    # 區域經理：只計其所屬區域的整體團隊業績。
-    return [emp.id for emp in active if emp.region == e.region]
+    contributors=_sales_contributors(active, e.region if e.title == "區域經理" else None)
+    return [emp.id for emp in contributors]
 
+def _employee_target(db: Session, e: Employee):
+    """Dynamic KPI target for each employee according to role."""
+    if e.title not in MANAGER_TITLES:
+        return _personal_target(e)
+    active=list(db.scalars(select(Employee).where(Employee.active==True)))
+    if e.title == "區域經理":
+        return _dynamic_team_target_from_emps(active, e.region)
+    return _dynamic_team_target_from_emps(active)
 
 def _employee_month_rate(db: Session, e: Employee, month_start: date):
     month_end=_month_end(month_start)
     member_ids=_team_member_ids(db,e)
-    amt=db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
-        Sale.employee_id.in_(member_ids), Sale.sale_date>=month_start, Sale.sale_date<=month_end
-    )) or 0
-    # Manager targets are team thresholds; individual titles use personal thresholds.
-    target=e.monthly_target or _title_target(e.title)
+    amt=0
+    if member_ids:
+        amt=db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
+            Sale.employee_id.in_(member_ids), Sale.sale_date>=month_start, Sale.sale_date<=month_end
+        )) or 0
+    target=_employee_target(db,e)
     return float(amt), _pct(float(amt), float(target))
 
-
 def _scope_team_target(emps):
-    """Pick one non-overlapping target layer for the current dashboard scope.
-
-    This prevents double counting the same organization by adding 協理、區經理、
-    襄理、主任、專員 thresholds together. We use the highest managerial layer
-    that exists in the current scope, and only fall back to individual targets
-    when no team manager exists.
-    """
-    for title in ("協理", "區域經理"):
-        managers=[e for e in emps if e.title == title]
-        if managers:
-            return sum(float(e.monthly_target or _title_target(e.title)) for e in managers)
-    return sum(float(e.monthly_target or _title_target(e.title)) for e in emps)
-
+    """Dashboard team target = 專員＋主任＋襄理 personal targets only."""
+    return _dynamic_team_target_from_emps(emps)
 
 def _consecutive_status(db: Session, e: Employee, month_start: date):
     achieved=0; missed=0
@@ -413,14 +419,17 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
     if user.role in ("manager","sales"):
         emps=[e for e in emps if e.region==user.region]
 
-    revenue=sum(s.amount for s in sales)
-    gp=sum(s.gross_profit for s in sales)
-    # Team target uses only one organizational layer to avoid double counting
-    # managerial team thresholds together with subordinate individual thresholds.
+    # Company / authorized-scope team performance is based on the same cohort as the target:
+    # all active 專員＋主任＋襄理. Manager personal sales are excluded from team KPI math.
+    contributor_ids={e.id for e in _sales_contributors(emps)}
+    team_sales=[s for s in sales if s.employee_id in contributor_ids]
+    revenue=sum(s.amount for s in team_sales)
+    gp=sum(s.gross_profit for s in team_sales)
     target=_scope_team_target(emps)
     rate=_pct(revenue,target)
-    avg_value=revenue/len(emps) if emps else 0
-    avg_target=(target/len(emps)) if emps else 0
+    contributor_count=len(contributor_ids)
+    avg_value=revenue/contributor_count if contributor_count else 0
+    avg_target=(target/contributor_count) if contributor_count else 0
 
     activities_q=select(Activity).where(Activity.activity_date>=month_start, Activity.activity_date<=month_end)
     if user.role in ("manager","sales"):
@@ -448,12 +457,12 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
 
     sales_kpis=[
         {"name":"團隊業績","target":target,"actual":revenue,"unit":"元","rate":rate,"light":_light(rate),"note":f"距目標差 {max(target-revenue,0):,.0f} 元" if rate<100 else "已達成團隊目標"},
-        {"name":"團隊人均產值","target":avg_target,"actual":avg_value,"unit":"元／人","rate":_pct(avg_value,avg_target),"light":_light(_pct(avg_value,avg_target)),"note":f"共 {len(emps)} 位有效人員"},
+        {"name":"團隊人均產值","target":avg_target,"actual":avg_value,"unit":"元／人","rate":_pct(avg_value,avg_target),"light":_light(_pct(avg_value,avg_target)),"note":f"共 {contributor_count} 位專員／主任／襄理"},
         {"name":"高毛利回報","target":70,"actual":(gp/revenue*100 if revenue else 0),"unit":"%","rate":_pct((gp/revenue*100 if revenue else 0),70),"light":_light(_pct((gp/revenue*100 if revenue else 0),70)),"note":"以整體毛利率 70% 作為管理基準"},
     ]
     # CRM headline KPIs are company/authorized-scope totals across all field sales staff,
     # not a single employee's target. Aggregate both actuals and targets consistently.
-    field_sales=[e for e in emps if e.title in ("專員","主任","襄理","區域經理")]
+    field_sales=_sales_contributors(emps)
     total_new_clinic_target=sum(float(e.new_clinic_target or 0) for e in field_sales)
     total_visit_target=sum(float(e.visit_target or 0) for e in field_sales)
     total_new_product_target=sum(float(e.new_product_target or 0) for e in field_sales)
@@ -466,8 +475,8 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
 
     by_emp=[]
     for e in emps:
-        target_e=e.monthly_target or _title_target(e.title)
-        if e.title in ("協理", "區域經理"):
+        target_e=_employee_target(db,e)
+        if e.title in MANAGER_TITLES:
             team_ids=set(_team_member_ids(db,e))
             emp_sales=[s for s in sales if s.employee_id in team_ids]
         else:
@@ -567,7 +576,11 @@ def kpi_action_approve(aid:int, db:Session=Depends(db_session), user:User=Depend
     if not e: raise HTTPException(404)
     if a.action_type in ("promotion","demotion") and a.to_title:
         e.title=a.to_title
-        e.monthly_target=_title_target(a.to_title)
+        # Only individual grades carry a personal sales target. Manager targets are dynamic.
+        if a.to_title in FIELD_SALES_TITLES:
+            e.monthly_target=_title_target(a.to_title)
+        else:
+            e.monthly_target=0
     elif a.action_type=="elimination":
         e.active=False
     # coaching is an acknowledged management action; no grade/status change.
@@ -587,12 +600,14 @@ def kpi_action_reject(aid:int, db:Session=Depends(db_session), user:User=Depends
 @app.get("/employees", response_class=HTMLResponse)
 def employees_page(request:Request, db:Session=Depends(db_session), user:User=Depends(current_user)):
     rows=list(db.scalars(select(Employee).order_by(Employee.region,Employee.title)))
-    return templates.TemplateResponse("employees.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows})
+    dynamic_targets={e.id:_employee_target(db,e) for e in rows}
+    return templates.TemplateResponse("employees.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"dynamic_targets":dynamic_targets})
 
 @app.post("/employees")
-def employee_add(employee_no:str=Form(...),name:str=Form(...),title:str=Form(...),region:str=Form(...),manager:str=Form(""),monthly_target:float=Form(...),crm_target:float=Form(100),visit_target:float=Form(40),new_clinic_target:float=Form(2),new_product_target:float=Form(1),db:Session=Depends(db_session),user:User=Depends(current_user)):
+def employee_add(employee_no:str=Form(...),name:str=Form(...),title:str=Form(...),region:str=Form(...),manager:str=Form(""),monthly_target:float=Form(0),crm_target:float=Form(100),visit_target:float=Form(40),new_clinic_target:float=Form(2),new_product_target:float=Form(1),db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive")
-    db.add(Employee(employee_no=employee_no,name=name,title=title,region=region,manager=manager,monthly_target=monthly_target,crm_target=crm_target,visit_target=visit_target,new_clinic_target=new_clinic_target,new_product_target=new_product_target)); db.commit(); audit(db,user,"新增","員工",f"{employee_no} {name}")
+    stored_target=max(monthly_target,0) if title in FIELD_SALES_TITLES else 0
+    db.add(Employee(employee_no=employee_no,name=name,title=title,region=region,manager=manager,monthly_target=stored_target,crm_target=crm_target,visit_target=visit_target,new_clinic_target=new_clinic_target,new_product_target=new_product_target)); db.commit(); audit(db,user,"新增","員工",f"{employee_no} {name}")
     return RedirectResponse("/employees",303)
 
 @app.post("/employees/{eid}/kpi")
@@ -600,7 +615,11 @@ def employee_kpi_update(eid:int, monthly_target:float=Form(...), crm_target:floa
     authorize(user,"admin","executive")
     e=db.get(Employee,eid)
     if not e: raise HTTPException(404)
-    e.monthly_target=max(monthly_target,0); e.crm_target=min(max(crm_target,0),100); e.visit_target=max(visit_target,0); e.new_clinic_target=max(new_clinic_target,0); e.new_product_target=max(new_product_target,0)
+    if e.title in FIELD_SALES_TITLES:
+        e.monthly_target=max(monthly_target,0)
+    else:
+        e.monthly_target=0
+    e.crm_target=min(max(crm_target,0),100); e.visit_target=max(visit_target,0); e.new_clinic_target=max(new_clinic_target,0); e.new_product_target=max(new_product_target,0)
     db.commit(); audit(db,user,"更新KPI","員工",f"{e.employee_no} {e.name} 業績={e.monthly_target}, CRM={e.crm_target}%, 拜訪={e.visit_target}, 新診所={e.new_clinic_target}, 新品={e.new_product_target}")
     return RedirectResponse("/employees?saved=1",303)
 
