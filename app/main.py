@@ -221,7 +221,7 @@ def startup():
             prods = [
                 Product(code="MET", name="METEORA", unit="盒", unit_price=120000, gross_margin=.72, monthly_target_qty=20),
                 Product(code="NEO", name="NeoFilera", unit="瓶", unit_price=80000, gross_margin=.75, monthly_target_qty=30),
-                Product(code="NVB", name="NovaBright", unit="台", unit_price=0, gross_margin=.70, monthly_target_qty=0),
+                Product(code="NVB", name="NovaBright", unit="台", unit_price=600000, gross_margin=.70, monthly_target_qty=0),
                 Product(code="RON", name="Ronkylä", unit="盒", unit_price=60000, gross_margin=.68, monthly_target_qty=50),
                 Product(code="PK", name="Pico-K", category="儀器", unit="台", unit_price=1500000, gross_margin=.55, monthly_target_qty=2),
                 Product(code="PT", name="探頭系列", category="耗材", unit="支", unit_price=25000, gross_margin=.65, monthly_target_qty=80),
@@ -242,8 +242,13 @@ def startup():
             for i,st in enumerate(stages):
                 db.add(Activity(activity_date=today, employee_id=emps[i%len(emps)].id, clinic_id=clinics[i%len(clinics)].id, stage=st, outcome="示範資料"))
         # Ensure NovaBright is present even on an existing Render/PostgreSQL database.
-        if not db.scalar(select(Product).where(Product.code == "NVB")):
-            db.add(Product(code="NVB", name="NovaBright", category="設備", unit="台", unit_price=0, gross_margin=.70, monthly_target_qty=0, active=True))
+        novabright = db.scalar(select(Product).where(Product.code == "NVB"))
+        if not novabright:
+            db.add(Product(code="NVB", name="NovaBright", category="設備", unit="台", unit_price=600000, gross_margin=.70, monthly_target_qty=0, active=True))
+        else:
+            # Product master correction only. Historical Sale.amount values are intentionally preserved.
+            novabright.unit = "台"
+            novabright.unit_price = 600000
         db.commit()
     finally:
         db.close()
@@ -307,6 +312,10 @@ def _light(rate: float, hard_red: bool = False):
     if rate < 100:
         return "yellow"
     return "green"
+
+def _weighted_kpi_score(revenue_rate: float, crm_rate: float):
+    """80% sales + 20% CRM. Sales >=100% can never be a red-light solely because CRM is low."""
+    return min(max(revenue_rate, 0), 120) * 0.80 + min(max(crm_rate, 0), 100) * 0.20
 
 
 FIELD_SALES_TITLES = ("專員", "主任", "襄理")
@@ -490,7 +499,16 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
         last_demotion=_latest_approved_demotion(db,e.id)
         # Employment actions are recommendations only. An authorized human must approve
         # them on the KPI action review page before any title/status is changed.
-        if missed>=3:
+        weighted_score=_weighted_kpi_score(rev_rate, emp_crm)
+        # CRM is no longer a veto. When sales achievement is >=100%, the worst status is yellow.
+        if rev_rate >= 100:
+            if achieved>=3 and _promotion_title(e.title) and emp_crm >= (e.crm_target if e.crm_target is not None else 100):
+                status="green"; status_text="綠燈"; to_title=_promotion_title(e.title); action=f"符合晉升 {to_title} 條件（待主管核准）"; action_type="promotion"
+            elif emp_crm < (e.crm_target if e.crm_target is not None else 100):
+                status="yellow"; status_text="黃燈"; action="業績已達標；CRM 未達標，列入改善追蹤（不觸發淘汰）"; action_type="coaching"
+            else:
+                status="green"; status_text="綠燈"; action="達標 / 維持現職"
+        elif missed>=3:
             status="red"; status_text="紅燈"
             if last_demotion and missed>=2:
                 action="降職後持續未達標 → 淘汰評估（待主管核准）"; action_type="elimination"
@@ -502,15 +520,11 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
                     action="最低職級持續未達標 → 淘汰評估（待主管核准）"; action_type="elimination"
         elif missed>=2:
             status="red"; status_text="紅燈"; action="黃牌輔導；次月未改善進入降職／淘汰評估"; action_type="coaching"
-        elif rev_rate<80 or emp_crm<80:
-            status="red"; status_text="紅燈"; action="立即輔導改善"; action_type="coaching"
-        elif achieved>=3 and _promotion_title(e.title):
-            status="green"; status_text="綠燈"; to_title=_promotion_title(e.title); action=f"符合晉升 {to_title} 條件（待主管核准）"; action_type="promotion"
-        elif rev_rate<100 or emp_crm<100:
-            status="yellow"; status_text="黃燈"; action="持續觀察"
+        elif weighted_score < 80:
+            status="red"; status_text="紅燈"; action="加權 KPI 未達 80 分，立即輔導改善"; action_type="coaching"
         else:
-            status="green"; status_text="綠燈"; action="達標 / 維持現職"
-        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":(e.crm_target if e.crm_target is not None else 100),"status":status,"status_text":status_text,"action":action,"action_type":action_type,"to_title":to_title,"achieved_months":achieved,"missed_months":missed})
+            status="yellow"; status_text="黃燈"; action="加權 KPI 未達完整標準，持續觀察"
+        by_emp.append({"id":e.id,"name":e.name,"title":e.title,"region":e.region,"amount":amt,"target":target_e,"revenue_rate":rev_rate,"crm_rate":emp_crm,"crm_target":(e.crm_target if e.crm_target is not None else 100),"weighted_score":weighted_score,"status":status,"status_text":status_text,"action":action,"action_type":action_type,"to_title":to_title,"achieved_months":achieved,"missed_months":missed})
     by_emp.sort(key=lambda x:(x["status"]!="red", x["revenue_rate"]))
 
     warning_count=sum(1 for r in by_emp if r["status"]=="red")
@@ -637,8 +651,11 @@ def sales_page(request:Request,db:Session=Depends(db_session),user:User=Depends(
     return templates.TemplateResponse("sales.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps,"products":products,"clinics":clinics})
 
 @app.post("/sales")
-def sale_add(sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=Form(...),clinic_id:int=Form(...),quantity:float=Form(...),amount:float=Form(...),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
-    p=db.get(Product,product_id); gp=amount*(p.gross_margin if p else 0)
+def sale_add(sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=Form(...),clinic_id:int=Form(...),quantity:float=Form(...),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    p=db.get(Product,product_id)
+    if not p: raise HTTPException(400,"產品不存在")
+    amount=float(quantity) * float(p.unit_price or 0)
+    gp=amount*float(p.gross_margin or 0)
     db.add(Sale(sale_date=sale_date,employee_id=employee_id,product_id=product_id,clinic_id=clinic_id,quantity=quantity,amount=amount,gross_profit=gp,note=note));
     c=db.get(Clinic,clinic_id)
     if c: c.last_order_date=sale_date
@@ -660,7 +677,7 @@ def sale_edit_page(sid:int, request:Request, db:Session=Depends(db_session), use
     })
 
 @app.post("/sales/{sid}/edit")
-def sale_edit(sid:int,sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=Form(...),clinic_id:int=Form(...),quantity:float=Form(...),amount:float=Form(...),status:str=Form("已認列"),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
+def sale_edit(sid:int,sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=Form(...),clinic_id:int=Form(...),quantity:float=Form(...),status:str=Form("已認列"),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive","manager")
     sale=db.get(Sale,sid)
     if not sale:
@@ -671,8 +688,9 @@ def sale_edit(sid:int,sale_date:date=Form(...),employee_id:int=Form(...),product
     sale.product_id=product_id
     sale.clinic_id=clinic_id
     sale.quantity=quantity
+    amount=float(quantity) * float(product.unit_price or 0)
     sale.amount=amount
-    sale.gross_profit=amount*(product.gross_margin if product else 0)
+    sale.gross_profit=amount*float(product.gross_margin or 0)
     sale.status=status
     sale.note=note
     clinic=db.get(Clinic,clinic_id)
@@ -760,7 +778,7 @@ def _norm(v):
 
 def _sales_validate(rows, db):
     checked=[]
-    required=["日期","員工編號","產品代碼","診所代碼","數量","金額"]
+    required=["日期","員工編號","產品代碼","診所代碼","數量"]
     for idx,row in enumerate(rows, start=2):
         errors=[]
         for k in required:
@@ -775,8 +793,7 @@ def _sales_validate(rows, db):
         except: d=None; errors.append("日期格式需為 YYYY-MM-DD")
         try: qty=float(row.get("數量",0)); assert qty>=0
         except: qty=0; errors.append("數量格式錯誤")
-        try: amount=float(row.get("金額",0)); assert amount>=0
-        except: amount=0; errors.append("金額格式錯誤")
+        amount=(qty * float(prod.unit_price or 0)) if prod else 0
         clean={"日期":_norm(row.get("日期")),"員工編號":_norm(row.get("員工編號")),"產品代碼":_norm(row.get("產品代碼")),"診所代碼":_norm(row.get("診所代碼")),"數量":qty,"金額":amount,"備註":_norm(row.get("備註"))}
         checked.append({"line":idx,"data":clean,"errors":errors})
     return checked
@@ -801,7 +818,7 @@ def _clinics_validate(rows, db):
 
 @app.get("/templates/sales-import.csv")
 def sales_template(user:User=Depends(current_user)):
-    text="日期,員工編號,產品代碼,診所代碼,數量,金額,備註\n2026-08-01,S001,METEORA,C001,2,800000,範例資料\n"
+    text="日期,員工編號,產品代碼,診所代碼,數量,備註\n2026-08-01,E201,NVB,C001,2,NovaBright 範例：系統自動計算 1,200,000 元\n"
     return Response(content=text.encode("utf-8-sig"),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_sales_import_template.csv"})
 
 @app.get("/templates/clinics-import.csv")
@@ -827,7 +844,7 @@ def import_sales_confirm(token:str=Form(...),db:Session=Depends(db_session),user
     for row in payload["rows"]:
         emp=db.scalar(select(Employee).where(Employee.employee_no==row["員工編號"])); prod=db.scalar(select(Product).where(Product.code==row["產品代碼"])); clinic=db.scalar(select(Clinic).where(Clinic.code==row["診所代碼"]))
         if not(emp and prod and clinic): continue
-        amount=float(row["金額"]); db.add(Sale(sale_date=date.fromisoformat(row["日期"]),employee_id=emp.id,product_id=prod.id,clinic_id=clinic.id,quantity=float(row["數量"]),amount=amount,gross_profit=amount*prod.gross_margin,note=row.get("備註",""))); count+=1
+        qty=float(row["數量"]); amount=qty*float(prod.unit_price or 0); db.add(Sale(sale_date=date.fromisoformat(row["日期"]),employee_id=emp.id,product_id=prod.id,clinic_id=clinic.id,quantity=qty,amount=amount,gross_profit=amount*prod.gross_margin,note=row.get("備註",""))); count+=1
     db.commit(); audit(db,user,"匯入","業績",f"{count} 筆（智慧匯入）")
     return RedirectResponse("/sales",303)
 

@@ -65,3 +65,9 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 - 區域經理 sales achievement = same-region sales by 專員 + 主任 + 襄理 ÷ same-region summed personal targets.
 - 區域經理 / 協理 no longer use fixed 1,500萬 / 5,000萬 sales thresholds and their sales target is read-only/dynamically calculated in KPI management.
 - Team average output uses the same 專員 + 主任 + 襄理 population to keep numerator, denominator, and headcount consistent.
+
+## v17 changes
+- Manager achievement: 協理 uses company contributor team sales / company contributor team target; 區域經理 uses regional contributor team sales / regional contributor team target.
+- CRM no longer vetoes strong sales. KPI score uses 80% sales + 20% CRM; when sales achievement >=100%, status cannot be red solely due to CRM and CRM shortfall becomes yellow coaching.
+- Sales amount is server-calculated as quantity × product standard unit price. NovaBright standard price is NT$600,000 per unit.
+- Existing historical Sale.amount values are not bulk-recalculated; editing a historical sale recalculates that record using the current standard price.

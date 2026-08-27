@@ -1,37 +1,16 @@
 {% extends 'base.html' %}
 {% block title %}編輯業績{% endblock %}
-{% block subtitle %}修改業務、產品、診所、數量與認列金額{% endblock %}
+{% block subtitle %}金額依產品標準單價自動重算；既有歷史資料只有在儲存修改時才會更新{% endblock %}
 {% block content %}
-<section class="panel formpanel">
-  <div class="panelhead"><h2>業績 #{{ sale.id }}</h2><a class="btnlink" href="/sales">返回業績管理</a></div>
-  <form method="post" class="formgrid">
-    <label>日期<input name="sale_date" type="date" value="{{ sale.sale_date }}" required></label>
-    <label>業務姓名
-      <select name="employee_id" required>
-        {% for e in employees %}
-        <option value="{{ e.id }}" {% if e.id == sale.employee_id %}selected{% endif %}>{{ e.name }}（{{ e.title }}・{{ e.region }}）</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>產品
-      <select name="product_id" required>
-        {% for p in products %}<option value="{{ p.id }}" {% if p.id == sale.product_id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>診所
-      <select name="clinic_id" required>
-        {% for c in clinics %}<option value="{{ c.id }}" {% if c.id == sale.clinic_id %}selected{% endif %}>{{ c.name }}（{{ c.region }}）</option>{% endfor %}
-      </select>
-    </label>
-    <label>數量<input name="quantity" type="number" step="0.01" min="0" value="{{ sale.quantity }}" required></label>
-    <label>金額<input name="amount" type="number" min="0" value="{{ sale.amount|round(0)|int }}" required></label>
-    <label>狀態
-      <select name="status">
-        {% for s in ['已認列','待確認','取消'] %}<option {% if s == sale.status %}selected{% endif %}>{{ s }}</option>{% endfor %}
-      </select>
-    </label>
-    <label class="wide">備註<input name="note" value="{{ sale.note or '' }}"></label>
-    <button type="submit">儲存修改</button>
-  </form>
-</section>
+<section class="panel formpanel"><div class="panelhead"><h2>業績 #{{ sale.id }}</h2><a class="btnlink" href="/sales">返回業績管理</a></div><form method="post" class="formgrid">
+<label>日期<input name="sale_date" type="date" value="{{ sale.sale_date }}" required></label>
+<label>業務姓名<select name="employee_id" required>{% for e in employees %}<option value="{{ e.id }}" {% if e.id == sale.employee_id %}selected{% endif %}>{{ e.name }}（{{ e.title }}・{{ e.region }}）</option>{% endfor %}</select></label>
+<label>產品<select name="product_id" id="product_id" required>{% for p in products %}<option value="{{ p.id }}" data-price="{{p.unit_price}}" data-unit="{{p.unit}}" {% if p.id == sale.product_id %}selected{% endif %}>{{ p.name }}｜NT$ {{'{:,.0f}'.format(p.unit_price)}} / {{p.unit}}</option>{% endfor %}</select></label>
+<label>診所<select name="clinic_id" required>{% for c in clinics %}<option value="{{ c.id }}" {% if c.id == sale.clinic_id %}selected{% endif %}>{{ c.name }}（{{ c.region }}）</option>{% endfor %}</select></label>
+<label>數量<input id="quantity" name="quantity" type="number" step="0.01" min="0" value="{{ sale.quantity }}" required></label>
+<label>系統計算金額<input id="calc_amount" type="text" readonly></label>
+<label>目前歷史認列金額<input type="text" value="NT$ {{'{:,.0f}'.format(sale.amount)}}" readonly></label>
+<label>狀態<select name="status">{% for s in ['已認列','待確認','取消'] %}<option {% if s == sale.status %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+<label class="wide">備註<input name="note" value="{{ sale.note or '' }}"></label><button type="submit">儲存修改並依標準單價重算</button></form></section>
+<script>function recalc(){const p=document.getElementById('product_id').selectedOptions[0];const q=parseFloat(document.getElementById('quantity').value||0);const price=parseFloat(p.dataset.price||0);document.getElementById('calc_amount').value='NT$ '+Math.round(q*price).toLocaleString('zh-TW');}document.getElementById('product_id').addEventListener('change',recalc);document.getElementById('quantity').addEventListener('input',recalc);recalc();</script>
 {% endblock %}
