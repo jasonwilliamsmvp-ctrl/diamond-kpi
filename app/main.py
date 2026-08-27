@@ -718,6 +718,24 @@ def product_add(code:str=Form(...),name:str=Form(...),category:str=Form(...),uni
     db.add(Product(code=code,name=name,category=category,unit=unit,unit_price=unit_price,gross_margin=gross_margin/100,monthly_target_qty=monthly_target_qty)); db.commit(); audit(db,user,"新增","產品",name)
     return RedirectResponse("/products",303)
 
+@app.post("/products/{pid}/edit")
+def product_edit(pid:int, name:str=Form(...), category:str=Form(...), unit:str=Form(...), unit_price:float=Form(...), gross_margin:float=Form(...), monthly_target_qty:float=Form(...), active:bool=Form(False), db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    p=db.get(Product,pid)
+    if not p:
+        raise HTTPException(404,"產品不存在")
+    old_price=float(p.unit_price or 0)
+    p.name=name.strip()
+    p.category=category.strip()
+    p.unit=unit.strip()
+    p.unit_price=max(0,float(unit_price))
+    p.gross_margin=max(0,min(100,float(gross_margin)))/100
+    p.monthly_target_qty=max(0,float(monthly_target_qty))
+    p.active=active
+    db.commit()
+    audit(db,user,"修改","產品",f"{p.code} {p.name} 標準單價 NT$ {old_price:,.0f} → NT$ {p.unit_price:,.0f}")
+    return RedirectResponse("/products",303)
+
 @app.get("/clinics",response_class=HTMLResponse)
 def clinics_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
     rows=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name))); emps=list(db.scalars(select(Employee).where(Employee.active==True)))
