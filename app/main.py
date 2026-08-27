@@ -746,10 +746,111 @@ def product_edit(pid:int, name:str=Form(...), category:str=Form(...), unit:str=F
     audit(db,user,"修改","產品",f"{p.code} {p.name} 標準單價 NT$ {old_price:,.0f} → NT$ {p.unit_price:,.0f}")
     return RedirectResponse("/products",303)
 
+
+
+def _pct_change(current: float, previous: float):
+    current=float(current or 0); previous=float(previous or 0)
+    if previous == 0:
+        return None if current == 0 else 100.0
+    return (current-previous)/previous*100
+
+def _period_bounds(ref: date):
+    month_start=date(ref.year, ref.month, 1)
+    if ref.month==12:
+        next_month=date(ref.year+1,1,1)
+    else:
+        next_month=date(ref.year,ref.month+1,1)
+    prev_month_end=month_start
+    prev_month_start=date(ref.year-1,12,1) if ref.month==1 else date(ref.year,ref.month-1,1)
+    q=((ref.month-1)//3)+1
+    q_start=date(ref.year,(q-1)*3+1,1)
+    if q==4:
+        q_end=date(ref.year+1,1,1)
+    else:
+        q_end=date(ref.year,q*3+1,1)
+    prev_q_end=q_start
+    if q==1:
+        prev_q_start=date(ref.year-1,10,1)
+    else:
+        prev_q_start=date(ref.year,(q-2)*3+1,1)
+    year_start=date(ref.year,1,1); year_end=date(ref.year+1,1,1)
+    prev_year_start=date(ref.year-1,1,1); prev_year_end=year_start
+    return {
+      'month':(month_start,next_month),'prev_month':(prev_month_start,prev_month_end),
+      'quarter':(q_start,q_end),'prev_quarter':(prev_q_start,prev_q_end),
+      'year':(year_start,year_end),'prev_year':(prev_year_start,prev_year_end),'quarter_no':q
+    }
+
+def _clinic_sales_sum(db: Session, clinic_id:int, start:Optional[date]=None, end:Optional[date]=None):
+    stmt=select(func.coalesce(func.sum(Sale.amount),0.0)).where(Sale.clinic_id==clinic_id, Sale.status=='已認列')
+    if start is not None: stmt=stmt.where(Sale.sale_date>=start)
+    if end is not None: stmt=stmt.where(Sale.sale_date<end)
+    return float(db.scalar(stmt) or 0)
+
+def _clinic_orders_count(db: Session, clinic_id:int):
+    return int(db.scalar(select(func.count(Sale.id)).where(Sale.clinic_id==clinic_id, Sale.status=='已認列')) or 0)
+
+def _clinic_analytics(db: Session, clinic: Clinic, ref: Optional[date]=None):
+    ref=ref or date.today(); b=_period_bounds(ref)
+    lifetime=_clinic_sales_sum(db,clinic.id)
+    month=_clinic_sales_sum(db,clinic.id,*b['month']); prev_month=_clinic_sales_sum(db,clinic.id,*b['prev_month'])
+    quarter=_clinic_sales_sum(db,clinic.id,*b['quarter']); prev_quarter=_clinic_sales_sum(db,clinic.id,*b['prev_quarter'])
+    year=_clinic_sales_sum(db,clinic.id,*b['year']); prev_year=_clinic_sales_sum(db,clinic.id,*b['prev_year'])
+    orders=_clinic_orders_count(db,clinic.id)
+    qty=float(db.scalar(select(func.coalesce(func.sum(Sale.quantity),0.0)).where(Sale.clinic_id==clinic.id,Sale.status=='已認列')) or 0)
+    avg=lifetime/orders if orders else 0
+    last=db.scalar(select(func.max(Sale.sale_date)).where(Sale.clinic_id==clinic.id,Sale.status=='已認列'))
+    days_since=(ref-last).days if last else None
+    if days_since is None: risk='尚未下單'
+    elif days_since>=90: risk='高流失風險'
+    elif days_since>=60: risk='需關注'
+    else: risk='正常'
+    # Last 12 monthly totals, oldest to newest
+    monthly=[]
+    cur=date(ref.year,ref.month,1)
+    for offset in range(11,-1,-1):
+        y=cur.year; m=cur.month-offset
+        while m<=0: y-=1; m+=12
+        start=date(y,m,1); end=date(y+1,1,1) if m==12 else date(y,m+1,1)
+        monthly.append({'label':f'{y}/{m:02d}','value':_clinic_sales_sum(db,clinic.id,start,end)})
+    # Quarter totals for current and prior year
+    quarterly=[]
+    for y in (ref.year-1,ref.year):
+        for q in range(1,5):
+            sm=(q-1)*3+1; start=date(y,sm,1); end=date(y+1,1,1) if q==4 else date(y,sm+3,1)
+            quarterly.append({'label':f'{y} Q{q}','value':_clinic_sales_sum(db,clinic.id,start,end)})
+    yearly=[]
+    for y in range(ref.year-3, ref.year+1):
+        yearly.append({'label':str(y),'value':_clinic_sales_sum(db,clinic.id,date(y,1,1),date(y+1,1,1))})
+    product_rows=[]
+    product_stmt=(select(Product.name, Product.unit, func.coalesce(func.sum(Sale.quantity),0.0), func.coalesce(func.sum(Sale.amount),0.0))
+                  .join(Sale,Sale.product_id==Product.id).where(Sale.clinic_id==clinic.id,Sale.status=='已認列')
+                  .group_by(Product.id,Product.name,Product.unit).order_by(func.sum(Sale.amount).desc()))
+    for name,unit,qv,av in db.execute(product_stmt): product_rows.append({'name':name,'unit':unit,'qty':float(qv or 0),'amount':float(av or 0)})
+    return {'lifetime':lifetime,'orders':orders,'qty':qty,'avg_order':avg,'last_order':last,'days_since':days_since,'risk':risk,
+      'month':month,'prev_month':prev_month,'mom':_pct_change(month,prev_month),
+      'quarter':quarter,'prev_quarter':prev_quarter,'qoq':_pct_change(quarter,prev_quarter),'quarter_no':b['quarter_no'],
+      'year':year,'prev_year':prev_year,'yoy':_pct_change(year,prev_year),
+      'monthly':monthly,'quarterly':quarterly,'yearly':yearly,'products':product_rows}
+
 @app.get("/clinics",response_class=HTMLResponse)
 def clinics_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    rows=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name))); emps=list(db.scalars(select(Employee).where(Employee.active==True)))
-    return templates.TemplateResponse("clinics.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps})
+    clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name))); emps=list(db.scalars(select(Employee).where(Employee.active==True)))
+    ref=date.today(); rows=[]
+    for c in clinics:
+        a=_clinic_analytics(db,c,ref)
+        rows.append({"clinic":c,**a})
+    return templates.TemplateResponse("clinics.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps,"ref":ref})
+
+@app.get("/clinics/{cid}",response_class=HTMLResponse)
+def clinic_detail(cid:int,request:Request,year:Optional[int]=None,month:Optional[int]=None,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    clinic=db.get(Clinic,cid)
+    if not clinic: raise HTTPException(404,"找不到診所")
+    today=date.today(); y=year or today.year; m=month or today.month
+    if m<1 or m>12: raise HTTPException(400,"月份錯誤")
+    ref=date(y,m,min(today.day,calendar.monthrange(y,m)[1]))
+    a=_clinic_analytics(db,clinic,ref)
+    return templates.TemplateResponse("clinic_detail.html",{"request":request,"user":user,"company":COMPANY_NAME,"clinic":clinic,"ref":ref,**a})
 
 @app.post("/clinics")
 def clinic_add(code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
