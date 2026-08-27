@@ -81,6 +81,9 @@ class Clinic(Base):
     name: Mapped[str] = mapped_column(String(150))
     region: Mapped[str] = mapped_column(String(30), default="北區")
     city: Mapped[str] = mapped_column(String(50), default="台北市")
+    contact_person: Mapped[str] = mapped_column(String(100), default="")
+    phone: Mapped[str] = mapped_column(String(50), default="")
+    address: Mapped[str] = mapped_column(String(255), default="")
     owner_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="有效客戶")
     last_order_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -191,11 +194,18 @@ def startup():
             conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS visit_target DOUBLE PRECISION DEFAULT 40"))
             conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS new_clinic_target DOUBLE PRECISION DEFAULT 2"))
             conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS new_product_target DOUBLE PRECISION DEFAULT 1"))
+            conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS contact_person VARCHAR(100) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS address VARCHAR(255) DEFAULT ''"))
         elif engine.dialect.name == "sqlite":
             cols = {r[1] for r in conn.execute(text("PRAGMA table_info(employees)"))}
             for col, default in [("crm_target",100),("visit_target",40),("new_clinic_target",2),("new_product_target",1)]:
                 if col not in cols:
                     conn.execute(text(f"ALTER TABLE employees ADD COLUMN {col} FLOAT DEFAULT {default}"))
+            clinic_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(clinics)"))}
+            for col, ddl in [("contact_person","TEXT DEFAULT ''"),("phone","TEXT DEFAULT ''"),("address","TEXT DEFAULT ''")]:
+                if col not in clinic_cols:
+                    conn.execute(text(f"ALTER TABLE clinics ADD COLUMN {col} {ddl}"))
     db = SessionLocal()
     try:
         if not db.scalar(select(func.count(User.id))):
@@ -742,8 +752,33 @@ def clinics_page(request:Request,db:Session=Depends(db_session),user:User=Depend
     return templates.TemplateResponse("clinics.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps})
 
 @app.post("/clinics")
-def clinic_add(code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),owner_employee_id:int=Form(...),status:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
-    db.add(Clinic(code=code,name=name,region=region,city=city,owner_employee_id=owner_employee_id,status=status)); db.commit(); audit(db,user,"新增","診所",name)
+def clinic_add(code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    if db.scalar(select(Clinic).where(Clinic.code==code.strip())):
+        raise HTTPException(400,"客戶代碼已存在")
+    db.add(Clinic(code=code.strip(),name=name.strip(),region=region,city=city.strip(),contact_person=contact_person.strip(),phone=phone.strip(),address=address.strip(),owner_employee_id=owner_employee_id,status=status)); db.commit(); audit(db,user,"新增","診所",name)
+    return RedirectResponse("/clinics",303)
+
+@app.get("/clinics/{cid}/edit",response_class=HTMLResponse)
+def clinic_edit_page(cid:int,request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    clinic=db.get(Clinic,cid)
+    if not clinic: raise HTTPException(404,"找不到診所")
+    emps=list(db.scalars(select(Employee).where(Employee.active==True).order_by(Employee.region,Employee.name)))
+    return templates.TemplateResponse("clinic_edit.html",{"request":request,"user":user,"company":COMPANY_NAME,"clinic":clinic,"employees":emps})
+
+@app.post("/clinics/{cid}/edit")
+def clinic_edit(cid:int,code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    clinic=db.get(Clinic,cid)
+    if not clinic: raise HTTPException(404,"找不到診所")
+    duplicate=db.scalar(select(Clinic).where(Clinic.code==code.strip(), Clinic.id!=cid))
+    if duplicate: raise HTTPException(400,"客戶代碼已被其他診所使用")
+    before=f"{clinic.code} {clinic.name}"
+    clinic.code=code.strip(); clinic.name=name.strip(); clinic.region=region; clinic.city=city.strip()
+    clinic.contact_person=contact_person.strip(); clinic.phone=phone.strip(); clinic.address=address.strip()
+    clinic.owner_employee_id=owner_employee_id; clinic.status=status
+    db.commit(); audit(db,user,"修改","診所",f"{before} → {clinic.code} {clinic.name}")
     return RedirectResponse("/clinics",303)
 
 @app.get("/activities",response_class=HTMLResponse)
@@ -819,7 +854,7 @@ def _sales_validate(rows, db):
 def _clinics_validate(rows, db):
     checked=[]; seen=set()
     for idx,row in enumerate(rows,start=2):
-        code=_norm(row.get("客戶代碼")); name=_norm(row.get("診所名稱")); region=_norm(row.get("區域")); city=_norm(row.get("城市")); eno=_norm(row.get("負責業務員工編號")); status=_norm(row.get("狀態")) or "有效客戶"
+        code=_norm(row.get("客戶代碼")); name=_norm(row.get("診所名稱")); region=_norm(row.get("區域")); city=_norm(row.get("城市")); contact_person=_norm(row.get("聯絡人")); phone=_norm(row.get("電話")); address=_norm(row.get("地址")); eno=_norm(row.get("負責業務員工編號")); status=_norm(row.get("狀態")) or "有效客戶"
         errors=[]
         if not code: errors.append("缺少客戶代碼")
         if not name: errors.append("缺少診所名稱")
@@ -831,7 +866,7 @@ def _clinics_validate(rows, db):
         if status not in ["有效客戶","潛在客戶","暫停交易"]: errors.append("狀態不正確")
         if code and (db.scalar(select(Clinic).where(Clinic.code==code)) or code in seen): errors.append("客戶代碼重複")
         seen.add(code)
-        checked.append({"line":idx,"data":{"客戶代碼":code,"診所名稱":name,"區域":region,"城市":city,"負責業務員工編號":eno,"狀態":status},"errors":errors})
+        checked.append({"line":idx,"data":{"客戶代碼":code,"診所名稱":name,"區域":region,"城市":city,"聯絡人":contact_person,"電話":phone,"地址":address,"負責業務員工編號":eno,"狀態":status},"errors":errors})
     return checked
 
 @app.get("/templates/sales-import.csv")
@@ -841,7 +876,7 @@ def sales_template(user:User=Depends(current_user)):
 
 @app.get("/templates/clinics-import.csv")
 def clinics_template(user:User=Depends(current_user)):
-    text="客戶代碼,診所名稱,區域,城市,負責業務員工編號,狀態\nC001,範例醫美診所,北區,台北市,S001,有效客戶\n"
+    text="客戶代碼,診所名稱,區域,城市,聯絡人,電話,地址,負責業務員工編號,狀態\nC001,範例醫美診所,北區,台北市,王小姐,02-1234-5678,台北市信義區範例路1號,S001,有效客戶\n"
     return Response(content=text.encode("utf-8-sig"),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_clinics_import_template.csv"})
 
 @app.post("/import/sales/preview",response_class=HTMLResponse)
@@ -885,7 +920,7 @@ def import_clinics_confirm(token:str=Form(...),db:Session=Depends(db_session),us
         if db.scalar(select(Clinic).where(Clinic.code==row["客戶代碼"])): continue
         emp=db.scalar(select(Employee).where(Employee.employee_no==row["負責業務員工編號"]))
         if not emp: continue
-        db.add(Clinic(code=row["客戶代碼"],name=row["診所名稱"],region=row["區域"],city=row["城市"],owner_employee_id=emp.id,status=row["狀態"])); count+=1
+        db.add(Clinic(code=row["客戶代碼"],name=row["診所名稱"],region=row["區域"],city=row["城市"],contact_person=row.get("聯絡人","") or "",phone=row.get("電話","") or "",address=row.get("地址","") or "",owner_employee_id=emp.id,status=row["狀態"])); count+=1
     db.commit(); audit(db,user,"匯入","診所",f"{count} 筆（智慧匯入）")
     return RedirectResponse("/clinics",303)
 

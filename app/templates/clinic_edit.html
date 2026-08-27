@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block title %}編輯診所{% endblock %}{% block subtitle %}修改診所基本資料、聯絡資訊與負責業務{% endblock %}{% block content %}
+<section class="panel formpanel"><div class="panelhead"><h2>編輯 {{ clinic.name }}</h2><a class="btnlink" href="/clinics">返回客戶管理</a></div>
+<form method="post" class="formgrid">
+<label>客戶代碼<input name="code" value="{{clinic.code}}" required></label><label>診所名稱<input name="name" value="{{clinic.name}}" required></label>
+<label>區域<select name="region">{% for r in ['北區','中區','南區'] %}<option {% if clinic.region==r %}selected{% endif %}>{{r}}</option>{% endfor %}</select></label><label>城市<input name="city" value="{{clinic.city}}" required></label>
+<label>聯絡人<input name="contact_person" value="{{clinic.contact_person or ''}}"></label><label>電話<input name="phone" value="{{clinic.phone or ''}}"></label>
+<label class="wide">地址<input name="address" value="{{clinic.address or ''}}"></label>
+<label>負責業務<select name="owner_employee_id">{% for e in employees %}<option value="{{e.id}}" {% if clinic.owner_employee_id==e.id %}selected{% endif %}>{{e.name}}（{{e.region}}・{{e.title}}）</option>{% endfor %}</select></label>
+<label>狀態<select name="status">{% for s in ['有效客戶','潛在客戶','暫停交易'] %}<option {% if clinic.status==s %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label>
+<button type="submit">儲存修改</button></form></section>{% endblock %}
