@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>中國線材市場綁定 Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="login" class="login-wrap">
+  <form id="loginForm" class="login-card">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+      <div class="eyebrow">DIAMOND BIOMEDICAL</div>
+      <button type="button" id="langToggleLogin" class="secondary lang-toggle">简体中文</button>
+    </div>
+    <h1 data-i18n="appTitle">中國線材市場綁定 Dashboard</h1>
+    <p data-i18n="loginSubtitle">多人協作版 · 醫師 / 機構 / KPI / 業務進度</p>
+    <label><span data-i18n="username">帳號</span><input id="username" autocomplete="username" required></label>
+    <label><span data-i18n="password">密碼</span><input id="password" type="password" autocomplete="current-password" required></label>
+    <button data-i18n="login">登入</button>
+    <div id="loginMsg" class="msg"></div>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <aside>
+    <div class="brand"><span>DIAMOND</span><strong>Thread Market CRM</strong></div>
+    <nav>
+      <button data-view="dashboard" class="active" data-i18n="navDashboard">戰情總覽</button>
+      <button data-view="doctors" data-i18n="navDoctors">醫師管理</button>
+      <button data-view="institutions" data-i18n="navInstitutions">機構管理</button>
+      <button data-view="rankings" data-i18n="navRankings">排行榜</button>
+      <button data-view="users" id="usersNav" data-i18n="navUsers">帳號管理</button>
+    </nav>
+    <div class="aside-foot"><div id="who"></div><button id="logout" data-i18n="logout">登出</button></div>
+  </aside>
+  <main>
+    <header>
+      <div><div class="eyebrow">CHINA MARKET COMMAND CENTER</div><h2 id="pageTitle">戰情總覽</h2></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button type="button" id="langToggleApp" class="secondary lang-toggle">简体中文</button><div class="pill" id="today"></div></div>
+    </header>
+
+    <section id="dashboardView" class="view">
+      <div class="kpis">
+        <article><span data-i18n="boundDoctors">綁定醫師</span><b id="kDoctors">0</b></article>
+        <article><span data-i18n="boundInstitutions">綁定機構</span><b id="kInst">0</b></article>
+        <article><span data-i18n="newBindingsThisMonth">本月新增綁定</span><b id="kNew">0</b></article>
+        <article><span data-i18n="lostThisMonth">本月流失</span><b id="kLost">0</b></article>
+        <article><span data-i18n="avgAchievement">平均達成率</span><b id="kAch">0%</b></article>
+      </div>
+      <div class="grid2">
+        <section class="card"><h3 data-i18n="doctorTop10">醫師 Top 10</h3><div id="doctorTop"></div></section>
+        <section class="card"><h3 data-i18n="institutionTop10">機構 Top 10</h3><div id="instTop"></div></section>
+      </div>
+      <div class="grid3">
+        <section class="card"><h3 data-i18n="bindingStatus">綁定狀態</h3><div id="statusBox"></div></section>
+        <section class="card"><h3 data-i18n="gradeStructure">分級結構</h3><div id="gradeBox"></div></section>
+        <section class="card"><h3 data-i18n="trafficLight">紅黃綠燈</h3><div id="alertBox"></div></section>
+      </div>
+    </section>
+
+    <section id="doctorsView" class="view hidden">
+      <div class="toolbar"><input id="doctorSearch" data-i18n-placeholder="doctorSearch" placeholder="搜尋醫師、城市、機構、負責業務"><button id="newDoctor" data-i18n="addDoctor">＋ 新增醫師</button></div>
+      <div class="table-wrap"><table><thead><tr>
+        <th data-i18n="doctor">醫師</th><th data-i18n="region">地區</th><th data-i18n="institution">機構</th><th data-i18n="sales">業務</th><th data-i18n="status">狀態</th><th data-i18n="grade">分級</th><th data-i18n="cumulativeCases">累積案例</th><th data-i18n="monthlyTarget">月目標</th><th data-i18n="actual">實際</th><th data-i18n="achievement">達成率</th><th data-i18n="alert">預警</th><th data-i18n="nextVisit">下次拜訪</th><th data-i18n="nextAction">下次行動</th><th></th>
+      </tr></thead><tbody id="doctorRows"></tbody></table></div>
+    </section>
+
+    <section id="institutionsView" class="view hidden">
+      <div class="toolbar"><input id="instSearch" data-i18n-placeholder="institutionSearch" placeholder="搜尋機構、城市、聯絡人、負責業務"><button id="newInst" data-i18n="addInstitution">＋ 新增機構</button></div>
+      <div class="table-wrap"><table><thead><tr>
+        <th data-i18n="institution">機構</th><th data-i18n="region">地區</th><th data-i18n="contact">聯絡人</th><th data-i18n="sales">業務</th><th data-i18n="status">狀態</th><th data-i18n="grade">分級</th><th data-i18n="cumulativeCases">累積案例</th><th data-i18n="monthlyTarget">月目標</th><th data-i18n="actual">實際</th><th data-i18n="achievement">達成率</th><th data-i18n="alert">預警</th><th data-i18n="nextVisit">下次拜訪</th><th data-i18n="nextAction">下次行動</th><th></th>
+      </tr></thead><tbody id="instRows"></tbody></table></div>
+    </section>
+
+    <section id="rankingsView" class="view hidden"><div class="grid3">
+      <section class="card"><h3 data-i18n="provinceRanking">省份排行榜</h3><div id="provinceRank"></div></section>
+      <section class="card"><h3 data-i18n="cityRanking">城市排行榜</h3><div id="cityRank"></div></section>
+      <section class="card"><h3 data-i18n="salesRanking">業務排行榜</h3><div id="salesRank"></div></section>
+    </div></section>
+
+    <section id="usersView" class="view hidden">
+      <div class="toolbar"><div><h3 data-i18n="multiAccounts">多人帳號</h3><small>Admin / Manager / Sales</small></div><button id="newUser" data-i18n="addAccount">＋ 新增帳號</button></div>
+      <div class="table-wrap"><table><thead><tr><th data-i18n="username">帳號</th><th data-i18n="name">姓名</th><th data-i18n="role">角色</th><th data-i18n="enabled">啟用</th><th data-i18n="createdDate">建立日</th></tr></thead><tbody id="userRows"></tbody></table></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="editor"><form id="entityForm" method="dialog">
+  <div class="modal-head"><div><div class="eyebrow">RECORD EDITOR</div><h3 id="editorTitle">新增</h3></div><button type="button" id="closeEditor" class="secondary" data-i18n="close">關閉</button></div>
+  <input type="hidden" id="entityType"><input type="hidden" id="entityId">
+  <div class="form-grid">
+    <label><span data-i18n="name">名稱</span><input id="fName" required></label>
+    <label><span data-i18n="province">省份</span><input id="fProvince"></label>
+    <label><span data-i18n="city">城市</span><input id="fCity"></label>
+    <label id="doctorInstitutionLabel"><span data-i18n="serviceInstitution">服務機構</span><input id="fInstitution"></label>
+    <label id="addressLabel" class="hidden wide"><span data-i18n="address">地址</span><input id="fAddress"></label>
+    <label id="birthLabel"><span data-i18n="birthday">生日</span><input id="fBirth" type="date"></label>
+    <label id="ageLabel"><span data-i18n="age">年齡</span><input id="fAge" type="number" min="0"></label>
+    <label id="genderLabel"><span data-i18n="gender">性別</span><select id="fGender"><option value="" data-i18n="notProvided">未提供</option><option value="男" data-i18n="male">男</option><option value="女" data-i18n="female">女</option><option value="其他" data-i18n="other">其他</option></select></label>
+    <label id="familyLabel"><span data-i18n="familyStatus">家庭狀況</span><input id="fFamily"></label>
+    <label id="interestLabel"><span data-i18n="interests">興趣喜好</span><input id="fInterests"></label>
+    <label id="contactLabel" class="hidden"><span data-i18n="contact">聯絡人</span><input id="fContact"></label>
+    <label id="contactInfoLabel" class="hidden"><span data-i18n="contactInfo">聯絡方式</span><input id="fContactInfo"></label>
+    <label><span data-i18n="responsibleSales">負責業務</span><input id="fOwner"></label>
+    <label><span data-i18n="bindingStatus">綁定狀態</span><select id="fStatus"><option value="未接觸" data-i18n="statusUncontacted">未接觸</option><option value="接觸中" data-i18n="statusContacting">接觸中</option><option value="試用" data-i18n="statusTrial">試用</option><option value="合作" data-i18n="statusCooperation">合作</option><option value="核心綁定" data-i18n="statusCore">核心綁定</option><option value="流失" data-i18n="statusLost">流失</option></select></label>
+    <label><span data-i18n="cumulativeCases">累積案例</span><input id="fCumulative" type="number" min="0"></label>
+    <label><span data-i18n="monthlyCases">月案例</span><input id="fMonthly" type="number" min="0"></label>
+    <label><span data-i18n="quarterlyCases">季案例</span><input id="fQuarterly" type="number" min="0"></label>
+    <label><span data-i18n="yearlyCases">年案例</span><input id="fYearly" type="number" min="0"></label>
+    <label>MoM %<input id="fMom" type="number" step="0.1"></label><label>QoQ %<input id="fQoq" type="number" step="0.1"></label><label>YoY %<input id="fYoy" type="number" step="0.1"></label>
+    <label><span data-i18n="monthlyTargetCases">月目標案例</span><input id="fTarget" type="number" min="0"></label>
+    <label><span data-i18n="monthlyActualCases">本月實際案例</span><input id="fActual" type="number" min="0"></label>
+    <label><span data-i18n="bindingDate">綁定日期</span><input id="fBindingDate" type="date"></label>
+    <label><span data-i18n="lostDate">流失日期</span><input id="fLostDate" type="date"></label>
+    <label><span data-i18n="lastVisit">最後拜訪</span><input id="fLastVisit" type="date"></label>
+    <label><span data-i18n="nextVisit">下次拜訪</span><input id="fNextVisit" type="date"></label>
+    <label class="wide"><span data-i18n="nextAction">下次行動</span><textarea id="fAction" rows="3"></textarea></label>
+  </div>
+  <div class="modal-actions"><span id="formMsg"></span><button type="submit" data-i18n="save">儲存</button></div>
+</form></dialog>
+
+<dialog id="userDialog"><form id="userForm" method="dialog">
+  <div class="modal-head"><h3 data-i18n="addMultiAccount">新增多人帳號</h3><button type="button" id="closeUser" class="secondary" data-i18n="close">關閉</button></div>
+  <div class="form-grid"><label><span data-i18n="username">帳號</span><input id="uUsername" required></label><label><span data-i18n="name">姓名</span><input id="uName" required></label><label><span data-i18n="role">角色</span><select id="uRole"><option value="sales">Sales</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label><label><span data-i18n="password">密碼</span><input id="uPassword" type="password" minlength="8" required></label></div>
+  <div class="modal-actions"><span id="userMsg"></span><button data-i18n="createAccount">建立帳號</button></div>
+</form></dialog>
+<script src="/app.js"></script></body></html>

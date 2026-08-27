@@ -1,38 +1,29 @@
 services:
   - type: web
-    name: diamond-kpi
-    runtime: python
-    region: singapore
+    name: china-thread-dashboard
+    runtime: node
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    autoDeployTrigger: commit
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.13.5"
+      - key: NODE_ENV
+        value: production
       - key: DATABASE_URL
         fromDatabase:
-          name: diamond-kpi-db
+          name: china-thread-dashboard-db
           property: connectionString
-      - key: SECRET_KEY
+      - key: SESSION_SECRET
         generateValue: true
-      - key: APP_ENV
-        value: production
-      - key: COMPANY_NAME
-        value: 晶鑽生醫
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
         sync: false
-      - key: SEED_DEMO_DATA
-        value: "true"
 
 databases:
-  - name: diamond-kpi-db
-    region: singapore
+  - name: china-thread-dashboard-db
     plan: free
-    databaseName: diamond_kpi
-    user: diamond_kpi
-    postgresMajorVersion: "17"
-    ipAllowList: []
+    databaseName: thread_dashboard
+    user: thread_dashboard_user
+    postgresMajorVersion: "18"
