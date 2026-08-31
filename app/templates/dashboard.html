@@ -7,6 +7,25 @@
   <a class="btnlink" href="/export/kpi.csv?month={{ month_key }}">匯出 KPI 報表</a>
 </div>
 
+<section class="company-growth">
+  <div class="panelhead"><h2>公司營運趨勢</h2><span>MoM · QoQ · YoY</span></div>
+  <div class="growth-cards">
+  {% for key, title in [('mom','MoM 月增率'),('qoq','QoQ 季增率'),('yoy','YoY 年增率')] %}
+    {% set g=company_growth[key] %}
+    <div class="growth-card">
+      <span>{{ title }}</span>
+      {% if g.rate is none %}
+        <strong class="yellow-text">N/A</strong><small>前期為 0，無法計算成長率</small>
+      {% else %}
+        <strong class="{{ 'green-text' if g.rate>0 else 'red-text' if g.rate<0 else '' }}">{{ '↑' if g.rate>0 else '↓' if g.rate<0 else '→' }} {{ '%+.1f'|format(g.rate) }}%</strong>
+        <small>{{ g.label }}</small>
+      {% endif %}
+      <div class="growth-base">目前 {{ '{:,.0f}'.format(g.current/10000) }} 萬 · 比較期 {{ '{:,.0f}'.format(g.previous/10000) }} 萬</div>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+
 <section class="kpi-cards">
   <div class="kpi-card"><span>本月團隊業績</span><strong>{{ '{:,.0f}'.format(revenue/10000) }} 萬</strong><small>目標 {{ '{:,.0f}'.format(target/10000) }} 萬</small><div class="ring-label {{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</div></div>
   <div class="kpi-card"><span>團隊達成率</span><strong class="{{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</strong><small>距目標差 {{ '{:,.0f}'.format([target-revenue,0]|max/10000) }} 萬</small><div class="status-line {{ 'green' if rate>=100 else 'red' if rate<80 else 'yellow' }}">● {{ '達標' if rate>=100 else '未達標' }}</div></div>

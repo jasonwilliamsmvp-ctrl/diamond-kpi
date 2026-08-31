@@ -425,6 +425,52 @@ def _consecutive_status(db: Session, e: Employee, month_start: date):
     return achieved, missed, current_rate
 
 
+def _company_revenue_between(db: Session, start: date, end: date):
+    """Company revenue for active 專員／主任／襄理 only, matching company KPI scope."""
+    active=list(db.scalars(select(Employee).where(Employee.active==True)))
+    ids=[e.id for e in _sales_contributors(active)]
+    if not ids:
+        return 0.0
+    return float(db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
+        Sale.employee_id.in_(ids), Sale.sale_date>=start, Sale.sale_date<=end
+    )) or 0)
+
+def _growth_pct(current, previous):
+    if previous == 0:
+        return None if current > 0 else 0.0
+    return (current-previous)/previous*100
+
+def _company_growth_context(db: Session, month_start: date):
+    month_end=_month_end(month_start)
+    # MoM: selected full month vs immediately preceding full month.
+    prev_m=_shift_month(month_start,-1)
+    mom_current=_company_revenue_between(db,month_start,month_end)
+    mom_previous=_company_revenue_between(db,prev_m,_month_end(prev_m))
+
+    # QoQ: quarter-to-date through selected month vs the same number of full months
+    # in the immediately preceding quarter.
+    q_start_month=((month_start.month-1)//3)*3+1
+    q_start=date(month_start.year,q_start_month,1)
+    elapsed_months=month_start.month-q_start_month+1
+    prev_q_start=_shift_month(q_start,-3)
+    prev_q_end_month=_shift_month(prev_q_start,elapsed_months-1)
+    prev_q_end=_month_end(prev_q_end_month)
+    qoq_current=_company_revenue_between(db,q_start,month_end)
+    qoq_previous=_company_revenue_between(db,prev_q_start,prev_q_end)
+
+    # YoY: YTD through selected month vs the same YTD period one year earlier.
+    ytd_start=date(month_start.year,1,1)
+    py_start=date(month_start.year-1,1,1)
+    py_end=_month_end(date(month_start.year-1,month_start.month,1))
+    yoy_current=_company_revenue_between(db,ytd_start,month_end)
+    yoy_previous=_company_revenue_between(db,py_start,py_end)
+
+    return {
+      "mom":{"rate":_growth_pct(mom_current,mom_previous),"current":mom_current,"previous":mom_previous,"label":"本月 vs 上月"},
+      "qoq":{"rate":_growth_pct(qoq_current,qoq_previous),"current":qoq_current,"previous":qoq_previous,"label":f"本季截至第 {elapsed_months} 月 vs 上季同期"},
+      "yoy":{"rate":_growth_pct(yoy_current,yoy_previous),"current":yoy_current,"previous":yoy_previous,"label":f"{month_start.year} YTD vs {month_start.year-1} 同期"},
+    }
+
 def kpi_context(db: Session, user: User, month: Optional[str] = None):
     month_start=_parse_month(month)
     month_end=_month_end(month_start)
@@ -541,8 +587,10 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
     yellow_count=sum(1 for r in by_emp if r["status"]=="yellow")
     prev_month=_shift_month(month_start,-1).strftime("%Y-%m")
     next_month=_shift_month(month_start,1).strftime("%Y-%m")
+    company_growth=_company_growth_context(db,month_start)
     return {
         "month_start":month_start,"month_key":month_key,"prev_month":prev_month,"next_month":next_month,
+        "company_growth":company_growth,
         "revenue":revenue,"target":target,"rate":rate,"gp":gp,"margin":gp/revenue*100 if revenue else 0,
         "avg_value":avg_value,"avg_target":avg_target,"crm_complete":crm_complete,"new_ordering":new_ordering,"visits":visits,
         "sales_kpis":sales_kpis,"crm_kpis":crm_kpis,"by_emp":by_emp,"warning_count":warning_count,"yellow_count":yellow_count,
