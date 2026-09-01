@@ -1,6 +1,32 @@
 {% extends 'base.html' %}
-{% block title %}首頁總覽{% endblock %}
-{% block subtitle %}Model C 菁英制 · 業績 KPI + CRM KPI + 晉升 / 淘汰自動判定{% endblock %}
+{% block title %}首頁總覽
+<script>
+const VIS={{ executive_visual|tojson }};
+const css=getComputedStyle(document.documentElement), navy='#102d72', gold='#d58a00', green='#16835f', muted='#6f7890', grid='#e6ebf2';
+const money=v=>v>=100000000?(v/100000000).toFixed(1)+'億':v>=10000?(v/10000).toFixed(0)+'萬':Math.round(v).toLocaleString();
+function setup(id){const c=document.getElementById(id),d=window.devicePixelRatio||1,w=c.clientWidth||600,h=250;c.width=w*d;c.height=h*d;const x=c.getContext('2d');x.scale(d,d);return{x,w,h};}
+function axes(x,w,h,max){x.strokeStyle=grid;x.fillStyle=muted;x.font='11px sans-serif';x.textAlign='right';for(let i=0;i<=4;i++){let y=18+(h-52)*i/4;x.beginPath();x.moveTo(48,y);x.lineTo(w-12,y);x.stroke();x.fillText(money(max*(4-i)/4),43,y+4)}}
+function bars(id,data,keys,colors){const {x,w,h}=setup(id);let max=Math.max(1,...data.flatMap(r=>keys.map(k=>r[k]||0)))*1.12;axes(x,w,h,max);let plot=w-66, step=plot/Math.max(data.length,1), bw=Math.min(26,step/(keys.length+1));data.forEach((r,i)=>{keys.forEach((k,j)=>{let v=r[k]||0,bh=(h-52)*v/max,xx=52+i*step+(step-bw*keys.length)/2+j*bw;x.fillStyle=colors[j];x.fillRect(xx,h-34-bh,bw-2,bh)});x.fillStyle=muted;x.textAlign='center';x.font='10px sans-serif';x.fillText(r.label,52+i*step+step/2,h-14)});}
+function lines(id,data,keys,colors){const {x,w,h}=setup(id);let max=Math.max(1,...data.flatMap(r=>keys.map(k=>r[k]||0)))*1.12;axes(x,w,h,max);let plot=w-70,step=plot/Math.max(data.length-1,1);keys.forEach((k,j)=>{x.strokeStyle=colors[j];x.lineWidth=2.5;x.beginPath();data.forEach((r,i)=>{let xx=52+i*step,yy=h-34-(h-52)*(r[k]||0)/max;i?x.lineTo(xx,yy):x.moveTo(xx,yy)});x.stroke();data.forEach((r,i)=>{let xx=52+i*step,yy=h-34-(h-52)*(r[k]||0)/max;x.fillStyle=colors[j];x.beginPath();x.arc(xx,yy,3,0,Math.PI*2);x.fill()})});data.forEach((r,i)=>{x.fillStyle=muted;x.textAlign='center';x.font='10px sans-serif';x.fillText(r.label,52+i*step,h-14)});}
+function donut(){const {x,w,h}=setup('productMix'),data=VIS.products,total=data.reduce((a,r)=>a+r.actual,0);if(!total){x.fillStyle=muted;x.textAlign='center';x.fillText('本月尚無產品營收資料',w/2,h/2);return}let colors=['#102d72','#d58a00','#16835f','#7b4bb7','#2c7da0','#c54848','#637083'],start=-Math.PI/2,cx=Math.min(w*.34,150),cy=h/2,r=82;data.forEach((row,i)=>{let a=row.actual/total*Math.PI*2;x.beginPath();x.strokeStyle=colors[i%colors.length];x.lineWidth=30;x.arc(cx,cy,r,start,start+a);x.stroke();start+=a});x.fillStyle=navy;x.font='700 17px sans-serif';x.textAlign='center';x.fillText(money(total),cx,cy);x.font='11px sans-serif';x.fillStyle=muted;x.fillText('本月營收',cx,cy+18);document.getElementById('productLegend').innerHTML=data.slice(0,7).map((r,i)=>`<div><i style="background:${colors[i%colors.length]}"></i><span>${r.label}</span><b>${(r.actual/total*100).toFixed(1)}%</b></div>`).join('')}
+function drawAll(){lines('monthlyTrend',VIS.monthly,['actual','target'],[navy,gold]);bars('quarterTrend',VIS.quarters,['actual'],[navy]);lines('yoyTrend',VIS.yoy_monthly,['previous','current'],['#a7b1c2',navy]);bars('regionTrend',VIS.regions,['actual','target'],[navy,gold]);donut()}
+window.addEventListener('load',drawAll);let rt;window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(drawAll,150)});
+</script>
+{% endblock %}
+{% block subtitle %}Model C 菁英制 · 業績 KPI + CRM KPI + 晉升 / 淘汰自動判定
+<script>
+const VIS={{ executive_visual|tojson }};
+const css=getComputedStyle(document.documentElement), navy='#102d72', gold='#d58a00', green='#16835f', muted='#6f7890', grid='#e6ebf2';
+const money=v=>v>=100000000?(v/100000000).toFixed(1)+'億':v>=10000?(v/10000).toFixed(0)+'萬':Math.round(v).toLocaleString();
+function setup(id){const c=document.getElementById(id),d=window.devicePixelRatio||1,w=c.clientWidth||600,h=250;c.width=w*d;c.height=h*d;const x=c.getContext('2d');x.scale(d,d);return{x,w,h};}
+function axes(x,w,h,max){x.strokeStyle=grid;x.fillStyle=muted;x.font='11px sans-serif';x.textAlign='right';for(let i=0;i<=4;i++){let y=18+(h-52)*i/4;x.beginPath();x.moveTo(48,y);x.lineTo(w-12,y);x.stroke();x.fillText(money(max*(4-i)/4),43,y+4)}}
+function bars(id,data,keys,colors){const {x,w,h}=setup(id);let max=Math.max(1,...data.flatMap(r=>keys.map(k=>r[k]||0)))*1.12;axes(x,w,h,max);let plot=w-66, step=plot/Math.max(data.length,1), bw=Math.min(26,step/(keys.length+1));data.forEach((r,i)=>{keys.forEach((k,j)=>{let v=r[k]||0,bh=(h-52)*v/max,xx=52+i*step+(step-bw*keys.length)/2+j*bw;x.fillStyle=colors[j];x.fillRect(xx,h-34-bh,bw-2,bh)});x.fillStyle=muted;x.textAlign='center';x.font='10px sans-serif';x.fillText(r.label,52+i*step+step/2,h-14)});}
+function lines(id,data,keys,colors){const {x,w,h}=setup(id);let max=Math.max(1,...data.flatMap(r=>keys.map(k=>r[k]||0)))*1.12;axes(x,w,h,max);let plot=w-70,step=plot/Math.max(data.length-1,1);keys.forEach((k,j)=>{x.strokeStyle=colors[j];x.lineWidth=2.5;x.beginPath();data.forEach((r,i)=>{let xx=52+i*step,yy=h-34-(h-52)*(r[k]||0)/max;i?x.lineTo(xx,yy):x.moveTo(xx,yy)});x.stroke();data.forEach((r,i)=>{let xx=52+i*step,yy=h-34-(h-52)*(r[k]||0)/max;x.fillStyle=colors[j];x.beginPath();x.arc(xx,yy,3,0,Math.PI*2);x.fill()})});data.forEach((r,i)=>{x.fillStyle=muted;x.textAlign='center';x.font='10px sans-serif';x.fillText(r.label,52+i*step,h-14)});}
+function donut(){const {x,w,h}=setup('productMix'),data=VIS.products,total=data.reduce((a,r)=>a+r.actual,0);if(!total){x.fillStyle=muted;x.textAlign='center';x.fillText('本月尚無產品營收資料',w/2,h/2);return}let colors=['#102d72','#d58a00','#16835f','#7b4bb7','#2c7da0','#c54848','#637083'],start=-Math.PI/2,cx=Math.min(w*.34,150),cy=h/2,r=82;data.forEach((row,i)=>{let a=row.actual/total*Math.PI*2;x.beginPath();x.strokeStyle=colors[i%colors.length];x.lineWidth=30;x.arc(cx,cy,r,start,start+a);x.stroke();start+=a});x.fillStyle=navy;x.font='700 17px sans-serif';x.textAlign='center';x.fillText(money(total),cx,cy);x.font='11px sans-serif';x.fillStyle=muted;x.fillText('本月營收',cx,cy+18);document.getElementById('productLegend').innerHTML=data.slice(0,7).map((r,i)=>`<div><i style="background:${colors[i%colors.length]}"></i><span>${r.label}</span><b>${(r.actual/total*100).toFixed(1)}%</b></div>`).join('')}
+function drawAll(){lines('monthlyTrend',VIS.monthly,['actual','target'],[navy,gold]);bars('quarterTrend',VIS.quarters,['actual'],[navy]);lines('yoyTrend',VIS.yoy_monthly,['previous','current'],['#a7b1c2',navy]);bars('regionTrend',VIS.regions,['actual','target'],[navy,gold]);donut()}
+window.addEventListener('load',drawAll);let rt;window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(drawAll,150)});
+</script>
+{% endblock %}
 {% block content %}
 <div class="kpi-toolbar">
   <div class="month-nav"><a href="/?month={{ prev_month }}">‹</a><strong>{{ month_start.year }} 年 {{ month_start.month }} 月</strong><a href="/?month={{ next_month }}">›</a></div>
@@ -23,6 +49,29 @@
       <div class="growth-base">目前 {{ '{:,.0f}'.format(g.current/10000) }} 萬 · 比較期 {{ '{:,.0f}'.format(g.previous/10000) }} 萬</div>
     </div>
   {% endfor %}
+  </div>
+</section>
+
+<section class="executive-visuals">
+  <div class="panel visual-panel visual-wide">
+    <div class="panelhead"><h2>近 12 個月公司業績趨勢</h2><span>實際業績 vs KPI 目標</span></div>
+    <canvas id="monthlyTrend" height="250"></canvas>
+  </div>
+  <div class="panel visual-panel">
+    <div class="panelhead"><h2>季度業績趨勢</h2><span>最近 8 季</span></div>
+    <canvas id="quarterTrend" height="250"></canvas>
+  </div>
+  <div class="panel visual-panel">
+    <div class="panelhead"><h2>YoY 月度比較</h2><span>{{ month_start.year }} vs {{ month_start.year-1 }}</span></div>
+    <canvas id="yoyTrend" height="250"></canvas>
+  </div>
+  <div class="panel visual-panel">
+    <div class="panelhead"><h2>區域業績比較</h2><span>本月實績 vs 目標</span></div>
+    <canvas id="regionTrend" height="250"></canvas>
+  </div>
+  <div class="panel visual-panel">
+    <div class="panelhead"><h2>產品營收結構</h2><span>本月產品貢獻</span></div>
+    <div class="product-mix-wrap"><canvas id="productMix" height="250"></canvas><div id="productLegend" class="product-legend"></div></div>
   </div>
 </section>
 
@@ -71,4 +120,17 @@
 </section>
 
 {% if warning_count %}<div class="warning-banner"><span>⚠</span><div><b>本月共有 {{ warning_count }} 位同仁進入紅燈警示</b><small>請儘速進行輔導與改善，避免連續未達標觸發降職 / 淘汰流程。</small></div><a href="#coaching">查看輔導名單</a></div>{% elif yellow_count %}<div class="warning-banner yellow-banner"><span>!</span><div><b>本月共有 {{ yellow_count }} 位同仁為黃燈</b><small>建議主管進行目標差距追蹤。</small></div></div>{% endif %}
+
+<script>
+const VIS={{ executive_visual|tojson }};
+const css=getComputedStyle(document.documentElement), navy='#102d72', gold='#d58a00', green='#16835f', muted='#6f7890', grid='#e6ebf2';
+const money=v=>v>=100000000?(v/100000000).toFixed(1)+'億':v>=10000?(v/10000).toFixed(0)+'萬':Math.round(v).toLocaleString();
+function setup(id){const c=document.getElementById(id),d=window.devicePixelRatio||1,w=c.clientWidth||600,h=250;c.width=w*d;c.height=h*d;const x=c.getContext('2d');x.scale(d,d);return{x,w,h};}
+function axes(x,w,h,max){x.strokeStyle=grid;x.fillStyle=muted;x.font='11px sans-serif';x.textAlign='right';for(let i=0;i<=4;i++){let y=18+(h-52)*i/4;x.beginPath();x.moveTo(48,y);x.lineTo(w-12,y);x.stroke();x.fillText(money(max*(4-i)/4),43,y+4)}}
+function bars(id,data,keys,colors){const {x,w,h}=setup(id);let max=Math.max(1,...data.flatMap(r=>keys.map(k=>r[k]||0)))*1.12;axes(x,w,h,max);let plot=w-66, step=plot/Math.max(data.length,1), bw=Math.min(26,step/(keys.length+1));data.forEach((r,i)=>{keys.forEach((k,j)=>{let v=r[k]||0,bh=(h-52)*v/max,xx=52+i*step+(step-bw*keys.length)/2+j*bw;x.fillStyle=colors[j];x.fillRect(xx,h-34-bh,bw-2,bh)});x.fillStyle=muted;x.textAlign='center';x.font='10px sans-serif';x.fillText(r.label,52+i*step+step/2,h-14)});}
+function lines(id,data,keys,colors){const {x,w,h}=setup(id);let max=Math.max(1,...data.flatMap(r=>keys.map(k=>r[k]||0)))*1.12;axes(x,w,h,max);let plot=w-70,step=plot/Math.max(data.length-1,1);keys.forEach((k,j)=>{x.strokeStyle=colors[j];x.lineWidth=2.5;x.beginPath();data.forEach((r,i)=>{let xx=52+i*step,yy=h-34-(h-52)*(r[k]||0)/max;i?x.lineTo(xx,yy):x.moveTo(xx,yy)});x.stroke();data.forEach((r,i)=>{let xx=52+i*step,yy=h-34-(h-52)*(r[k]||0)/max;x.fillStyle=colors[j];x.beginPath();x.arc(xx,yy,3,0,Math.PI*2);x.fill()})});data.forEach((r,i)=>{x.fillStyle=muted;x.textAlign='center';x.font='10px sans-serif';x.fillText(r.label,52+i*step,h-14)});}
+function donut(){const {x,w,h}=setup('productMix'),data=VIS.products,total=data.reduce((a,r)=>a+r.actual,0);if(!total){x.fillStyle=muted;x.textAlign='center';x.fillText('本月尚無產品營收資料',w/2,h/2);return}let colors=['#102d72','#d58a00','#16835f','#7b4bb7','#2c7da0','#c54848','#637083'],start=-Math.PI/2,cx=Math.min(w*.34,150),cy=h/2,r=82;data.forEach((row,i)=>{let a=row.actual/total*Math.PI*2;x.beginPath();x.strokeStyle=colors[i%colors.length];x.lineWidth=30;x.arc(cx,cy,r,start,start+a);x.stroke();start+=a});x.fillStyle=navy;x.font='700 17px sans-serif';x.textAlign='center';x.fillText(money(total),cx,cy);x.font='11px sans-serif';x.fillStyle=muted;x.fillText('本月營收',cx,cy+18);document.getElementById('productLegend').innerHTML=data.slice(0,7).map((r,i)=>`<div><i style="background:${colors[i%colors.length]}"></i><span>${r.label}</span><b>${(r.actual/total*100).toFixed(1)}%</b></div>`).join('')}
+function drawAll(){lines('monthlyTrend',VIS.monthly,['actual','target'],[navy,gold]);bars('quarterTrend',VIS.quarters,['actual'],[navy]);lines('yoyTrend',VIS.yoy_monthly,['previous','current'],['#a7b1c2',navy]);bars('regionTrend',VIS.regions,['actual','target'],[navy,gold]);donut()}
+window.addEventListener('load',drawAll);let rt;window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(drawAll,150)});
+</script>
 {% endblock %}

@@ -471,6 +471,54 @@ def _company_growth_context(db: Session, month_start: date):
       "yoy":{"rate":_growth_pct(yoy_current,yoy_previous),"current":yoy_current,"previous":yoy_previous,"label":f"{month_start.year} YTD vs {month_start.year-1} 同期"},
     }
 
+def _executive_visual_context(db: Session, month_start: date, emps, user: User):
+    """Chart-ready executive dashboard data, scoped to the signed-in user's authorized region."""
+    contributors=_sales_contributors(emps)
+    ids=[e.id for e in contributors]
+    def revenue_between(start, end, employee_ids=None):
+        use_ids=ids if employee_ids is None else employee_ids
+        if not use_ids: return 0.0
+        return float(db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
+            Sale.employee_id.in_(use_ids), Sale.sale_date>=start, Sale.sale_date<=end
+        )) or 0)
+
+    # Rolling 12 months: actual vs dynamic monthly target.
+    monthly=[]
+    for offset in range(-11,1):
+        m=_shift_month(month_start,offset)
+        actual=revenue_between(m,_month_end(m))
+        monthly.append({"label":f"{m.month}月", "year":m.year, "actual":actual, "target":_scope_team_target(emps)})
+
+    # Monthly YoY overlay for Jan through selected month.
+    yoy_monthly=[]
+    for mm in range(1,month_start.month+1):
+        cur=date(month_start.year,mm,1); prev=date(month_start.year-1,mm,1)
+        yoy_monthly.append({"label":f"{mm}月", "current":revenue_between(cur,_month_end(cur)), "previous":revenue_between(prev,_month_end(prev))})
+
+    # Last 8 completed/selected quarters.
+    q_start_month=((month_start.month-1)//3)*3+1
+    current_q=date(month_start.year,q_start_month,1)
+    quarters=[]
+    for offset in range(-7,1):
+        qs=_shift_month(current_q,offset*3); qe=_month_end(_shift_month(qs,2))
+        actual=revenue_between(qs, min(qe,_month_end(month_start)) if offset==0 else qe)
+        quarters.append({"label":f"{qs.year} Q{((qs.month-1)//3)+1}", "actual":actual})
+
+    # Region actual vs summed personal targets for selected month.
+    regions=[]
+    for region in sorted({e.region for e in contributors}):
+        remps=[e for e in contributors if e.region==region]
+        rids=[e.id for e in remps]
+        regions.append({"label":region, "actual":revenue_between(month_start,_month_end(month_start),rids), "target":sum(_personal_target(e) for e in remps)})
+
+    # Product revenue mix for selected month.
+    product_rows=db.execute(select(Product.name, func.coalesce(func.sum(Sale.amount),0)).join(Sale, Sale.product_id==Product.id).where(
+        Sale.employee_id.in_(ids) if ids else Sale.employee_id==-1,
+        Sale.sale_date>=month_start, Sale.sale_date<=_month_end(month_start)
+    ).group_by(Product.id,Product.name).order_by(func.sum(Sale.amount).desc())).all()
+    products=[{"label":name,"actual":float(amount or 0)} for name,amount in product_rows]
+    return {"monthly":monthly,"yoy_monthly":yoy_monthly,"quarters":quarters,"regions":regions,"products":products}
+
 def kpi_context(db: Session, user: User, month: Optional[str] = None):
     month_start=_parse_month(month)
     month_end=_month_end(month_start)
@@ -588,9 +636,10 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
     prev_month=_shift_month(month_start,-1).strftime("%Y-%m")
     next_month=_shift_month(month_start,1).strftime("%Y-%m")
     company_growth=_company_growth_context(db,month_start)
+    executive_visual=_executive_visual_context(db,month_start,emps,user)
     return {
         "month_start":month_start,"month_key":month_key,"prev_month":prev_month,"next_month":next_month,
-        "company_growth":company_growth,
+        "company_growth":company_growth,"executive_visual":executive_visual,
         "revenue":revenue,"target":target,"rate":rate,"gp":gp,"margin":gp/revenue*100 if revenue else 0,
         "avg_value":avg_value,"avg_target":avg_target,"crm_complete":crm_complete,"new_ordering":new_ordering,"visits":visits,
         "sales_kpis":sales_kpis,"crm_kpis":crm_kpis,"by_emp":by_emp,"warning_count":warning_count,"yellow_count":yellow_count,
