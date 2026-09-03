@@ -243,8 +243,8 @@ def startup():
             today=date.today()
             demo_sales=[
                 (emps[2],prods[0],clinics[0],12,1440000),(emps[2],prods[1],clinics[1],18,1440000),
-                (emps[3],prods[2],clinics[2],24,1440000),(emps[4],prods[4],clinics[3],38,950000),
-                (emps[1],prods[3],clinics[0],1,1500000),(emps[0],prods[0],clinics[4],8,960000),
+                (emps[3],prods[3],clinics[2],24,1440000),(emps[4],prods[5],clinics[3],38,950000),
+                (emps[1],prods[4],clinics[0],1,1500000),(emps[0],prods[0],clinics[4],8,960000),
             ]
             for e,p,c,q,a in demo_sales:
                 db.add(Sale(sale_date=today, employee_id=e.id, product_id=p.id, clinic_id=c.id, quantity=q, amount=a, gross_profit=a*p.gross_margin))
@@ -259,6 +259,34 @@ def startup():
             # Product master correction only. Historical Sale.amount values are intentionally preserved.
             novabright.unit = "台"
             novabright.unit_price = 600000
+
+        # v23: repair the three legacy demo rows whose product references were shifted
+        # when NovaBright was inserted into the seed product list in v17.
+        # The correction is intentionally fingerprinted by employee + current product +
+        # quantity + amount, so real customer transactions are not broadly rewritten.
+        demo_repairs = [
+            ("張主任", "NVB", 24, 1440000, "RON"),
+            ("李專員", "PK", 38, 950000, "PT"),
+            ("王區經理", "RON", 1, 1500000, "PK"),
+        ]
+        for employee_name, wrong_code, qty, amount, correct_code in demo_repairs:
+            employee = db.scalar(select(Employee).where(Employee.name == employee_name))
+            wrong_product = db.scalar(select(Product).where(Product.code == wrong_code))
+            correct_product = db.scalar(select(Product).where(Product.code == correct_code))
+            if not employee or not wrong_product or not correct_product:
+                continue
+            rows = db.scalars(
+                select(Sale).where(
+                    Sale.employee_id == employee.id,
+                    Sale.product_id == wrong_product.id,
+                    Sale.quantity == qty,
+                    Sale.amount == amount,
+                )
+            ).all()
+            for sale in rows:
+                sale.product_id = correct_product.id
+                sale.gross_profit = float(sale.amount or 0) * float(correct_product.gross_margin or 0)
+
         db.commit()
     finally:
         db.close()

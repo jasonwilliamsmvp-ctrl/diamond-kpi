@@ -71,3 +71,8 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 - CRM no longer vetoes strong sales. KPI score uses 80% sales + 20% CRM; when sales achievement >=100%, status cannot be red solely due to CRM and CRM shortfall becomes yellow coaching.
 - Sales amount is server-calculated as quantity × product standard unit price. NovaBright standard price is NT$600,000 per unit.
 - Existing historical Sale.amount values are not bulk-recalculated; editing a historical sale recalculates that record using the current standard price.
+
+## v23 product-reference correction
+- Corrects three legacy demo sales whose product references shifted after NovaBright was inserted into the product seed list.
+- Correct rows are: 張主任 Ronkylä ×24 = NT$1,440,000; 李專員 探頭系列 ×38 = NT$950,000; 王區經理 Pico-K ×1 = NT$1,500,000.
+- Existing PostgreSQL demo rows matching the exact legacy fingerprints are repaired automatically at startup. Other sales are left unchanged.
