@@ -747,10 +747,23 @@ def kpi_action_reject(aid:int, db:Session=Depends(db_session), user:User=Depends
     return RedirectResponse("/kpi-actions",303)
 
 @app.get("/employees", response_class=HTMLResponse)
-def employees_page(request:Request, db:Session=Depends(db_session), user:User=Depends(current_user)):
-    rows=list(db.scalars(select(Employee).order_by(Employee.region,Employee.title)))
+def employees_page(request:Request, status:str="active", db:Session=Depends(db_session), user:User=Depends(current_user)):
+    q=select(Employee)
+    if status == "inactive":
+        q=q.where(Employee.active==False)
+    elif status != "all":
+        status="active"
+        q=q.where(Employee.active==True)
+    rows=list(db.scalars(q.order_by(Employee.region,Employee.title,Employee.name)))
     dynamic_targets={e.id:_employee_target(db,e) for e in rows}
-    return templates.TemplateResponse("employees.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"dynamic_targets":dynamic_targets})
+    can_delete={}
+    for e in rows:
+        refs=(db.scalar(select(func.count(Sale.id)).where(Sale.employee_id==e.id)) or 0)
+        refs+=(db.scalar(select(func.count(Activity.id)).where(Activity.employee_id==e.id)) or 0)
+        refs+=(db.scalar(select(func.count(Clinic.id)).where(Clinic.owner_employee_id==e.id)) or 0)
+        refs+=(db.scalar(select(func.count(KPIAction.id)).where(KPIAction.employee_id==e.id)) or 0)
+        can_delete[e.id]=(refs==0)
+    return templates.TemplateResponse("employees.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"dynamic_targets":dynamic_targets,"status_filter":status,"can_delete":can_delete})
 
 @app.post("/employees")
 def employee_add(employee_no:str=Form(...),name:str=Form(...),title:str=Form(...),region:str=Form(...),manager:str=Form(""),monthly_target:float=Form(0),crm_target:float=Form(100),visit_target:float=Form(40),new_clinic_target:float=Form(2),new_product_target:float=Form(1),db:Session=Depends(db_session),user:User=Depends(current_user)):
@@ -772,12 +785,30 @@ def employee_kpi_update(eid:int, monthly_target:float=Form(...), crm_target:floa
     db.commit(); audit(db,user,"更新KPI","員工",f"{e.employee_no} {e.name} 業績={e.monthly_target}, CRM={e.crm_target}%, 拜訪={e.visit_target}, 新診所={e.new_clinic_target}, 新品={e.new_product_target}")
     return RedirectResponse("/employees?saved=1",303)
 
+@app.post("/employees/{eid}/toggle-active")
+def employee_toggle_active(eid:int, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive")
+    e=db.get(Employee,eid)
+    if not e: raise HTTPException(404)
+    e.active=not e.active
+    db.commit(); audit(db,user,"啟用" if e.active else "停用","員工",f"{e.employee_no} {e.name}")
+    return RedirectResponse("/employees?status="+("active" if e.active else "inactive"),303)
+
 @app.post("/employees/{eid}/delete")
 def employee_delete(eid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin")
     e=db.get(Employee,eid)
-    if e: e.active=False; db.commit(); audit(db,user,"停用","員工",e.name)
-    return RedirectResponse("/employees",303)
+    if not e: raise HTTPException(404)
+    refs=(db.scalar(select(func.count(Sale.id)).where(Sale.employee_id==eid)) or 0)
+    refs+=(db.scalar(select(func.count(Activity.id)).where(Activity.employee_id==eid)) or 0)
+    refs+=(db.scalar(select(func.count(Clinic.id)).where(Clinic.owner_employee_id==eid)) or 0)
+    refs+=(db.scalar(select(func.count(KPIAction.id)).where(KPIAction.employee_id==eid)) or 0)
+    if refs:
+        e.active=False; db.commit(); audit(db,user,"停用（保留歷史）","員工",f"{e.employee_no} {e.name}，關聯紀錄 {refs} 筆")
+        return RedirectResponse("/employees?status=inactive&protected=1",303)
+    detail=f"{e.employee_no} {e.name}"
+    db.delete(e); db.commit(); audit(db,user,"永久刪除","員工",detail)
+    return RedirectResponse("/employees?status=all&deleted=1",303)
 
 @app.get("/sales", response_class=HTMLResponse)
 def sales_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
