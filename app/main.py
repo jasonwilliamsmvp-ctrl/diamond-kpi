@@ -61,6 +61,7 @@ class Employee(Base):
     new_clinic_target: Mapped[float] = mapped_column(Float, default=2)
     new_product_target: Mapped[float] = mapped_column(Float, default=1)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class Product(Base):
     __tablename__ = "products"
@@ -194,6 +195,7 @@ def startup():
             conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS visit_target DOUBLE PRECISION DEFAULT 40"))
             conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS new_clinic_target DOUBLE PRECISION DEFAULT 2"))
             conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS new_product_target DOUBLE PRECISION DEFAULT 1"))
+            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE"))
             conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS contact_person VARCHAR(100) DEFAULT ''"))
             conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT ''"))
             conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS address VARCHAR(255) DEFAULT ''"))
@@ -202,6 +204,8 @@ def startup():
             for col, default in [("crm_target",100),("visit_target",40),("new_clinic_target",2),("new_product_target",1)]:
                 if col not in cols:
                     conn.execute(text(f"ALTER TABLE employees ADD COLUMN {col} FLOAT DEFAULT {default}"))
+            if "is_deleted" not in cols:
+                conn.execute(text("ALTER TABLE employees ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
             clinic_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(clinics)"))}
             for col, ddl in [("contact_person","TEXT DEFAULT ''"),("phone","TEXT DEFAULT ''"),("address","TEXT DEFAULT ''")]:
                 if col not in clinic_cols:
@@ -409,7 +413,7 @@ def _team_member_ids(db: Session, e: Employee):
     """
     if e.title not in MANAGER_TITLES:
         return [e.id]
-    active=list(db.scalars(select(Employee).where(Employee.active==True)))
+    active=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False)))
     contributors=_sales_contributors(active, e.region if e.title == "區域經理" else None)
     return [emp.id for emp in contributors]
 
@@ -417,7 +421,7 @@ def _employee_target(db: Session, e: Employee):
     """Dynamic KPI target for each employee according to role."""
     if e.title not in MANAGER_TITLES:
         return _personal_target(e)
-    active=list(db.scalars(select(Employee).where(Employee.active==True)))
+    active=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False)))
     if e.title == "區域經理":
         return _dynamic_team_target_from_emps(active, e.region)
     return _dynamic_team_target_from_emps(active)
@@ -455,7 +459,7 @@ def _consecutive_status(db: Session, e: Employee, month_start: date):
 
 def _company_revenue_between(db: Session, start: date, end: date):
     """Company revenue for active 專員／主任／襄理 only, matching company KPI scope."""
-    active=list(db.scalars(select(Employee).where(Employee.active==True)))
+    active=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False)))
     ids=[e.id for e in _sales_contributors(active)]
     if not ids:
         return 0.0
@@ -556,7 +560,7 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
         sales_query=sales_query.join(Employee).where(Employee.region==user.region)
     sales=list(db.scalars(sales_query))
 
-    emps=list(db.scalars(select(Employee).where(Employee.active==True)))
+    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False)))
     if user.role in ("manager","sales"):
         emps=[e for e in emps if e.region==user.region]
 
@@ -748,12 +752,12 @@ def kpi_action_reject(aid:int, db:Session=Depends(db_session), user:User=Depends
 
 @app.get("/employees", response_class=HTMLResponse)
 def employees_page(request:Request, status:str="active", db:Session=Depends(db_session), user:User=Depends(current_user)):
-    q=select(Employee)
+    q=select(Employee).where(Employee.is_deleted==False)
     if status == "inactive":
         q=q.where(Employee.active==False)
     elif status != "all":
         status="active"
-        q=q.where(Employee.active==True)
+        q=q.where(Employee.active==True, Employee.is_deleted==False)
     rows=list(db.scalars(q.order_by(Employee.region,Employee.title,Employee.name)))
     dynamic_targets={e.id:_employee_target(db,e) for e in rows}
     can_delete={}
@@ -796,24 +800,21 @@ def employee_toggle_active(eid:int, db:Session=Depends(db_session), user:User=De
 
 @app.post("/employees/{eid}/delete")
 def employee_delete(eid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    """Remove an employee from active management while preserving historical relations/reports."""
     authorize(user,"admin")
     e=db.get(Employee,eid)
-    if not e: raise HTTPException(404)
-    refs=(db.scalar(select(func.count(Sale.id)).where(Sale.employee_id==eid)) or 0)
-    refs+=(db.scalar(select(func.count(Activity.id)).where(Activity.employee_id==eid)) or 0)
-    refs+=(db.scalar(select(func.count(Clinic.id)).where(Clinic.owner_employee_id==eid)) or 0)
-    refs+=(db.scalar(select(func.count(KPIAction.id)).where(KPIAction.employee_id==eid)) or 0)
-    if refs:
-        e.active=False; db.commit(); audit(db,user,"停用（保留歷史）","員工",f"{e.employee_no} {e.name}，關聯紀錄 {refs} 筆")
-        return RedirectResponse("/employees?status=active&protected=1",303)
+    if not e or e.is_deleted: raise HTTPException(404)
     detail=f"{e.employee_no} {e.name}"
-    db.delete(e); db.commit(); audit(db,user,"永久刪除","員工",detail)
-    return RedirectResponse("/employees?status=all&deleted=1",303)
+    e.active=False
+    e.is_deleted=True
+    db.commit()
+    audit(db,user,"永久移除業務（保留歷史）","員工",detail)
+    return RedirectResponse("/employees?status=active&deleted=1",303)
 
 @app.get("/sales", response_class=HTMLResponse)
 def sales_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
     rows=list(db.scalars(select(Sale).order_by(Sale.sale_date.desc(),Sale.id.desc()).limit(300)))
-    emps=list(db.scalars(select(Employee).where(Employee.active==True))); products=list(db.scalars(select(Product).where(Product.active==True))); clinics=list(db.scalars(select(Clinic)))
+    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False))); products=list(db.scalars(select(Product).where(Product.active==True))); clinics=list(db.scalars(select(Clinic)))
     return templates.TemplateResponse("sales.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps,"products":products,"clinics":clinics})
 
 @app.post("/sales")
@@ -834,7 +835,7 @@ def sale_edit_page(sid:int, request:Request, db:Session=Depends(db_session), use
     sale=db.get(Sale,sid)
     if not sale:
         raise HTTPException(404,"找不到業績資料")
-    emps=list(db.scalars(select(Employee).where(Employee.active==True).order_by(Employee.region,Employee.name)))
+    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False).order_by(Employee.region,Employee.name)))
     products=list(db.scalars(select(Product).where(Product.active==True).order_by(Product.name)))
     clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name)))
     return templates.TemplateResponse("sales_edit.html",{
@@ -991,7 +992,7 @@ def _clinic_analytics(db: Session, clinic: Clinic, ref: Optional[date]=None):
 
 @app.get("/clinics",response_class=HTMLResponse)
 def clinics_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name))); emps=list(db.scalars(select(Employee).where(Employee.active==True)))
+    clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name))); emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False)))
     ref=date.today(); rows=[]
     for c in clinics:
         a=_clinic_analytics(db,c,ref)
@@ -1021,7 +1022,7 @@ def clinic_edit_page(cid:int,request:Request,db:Session=Depends(db_session),user
     authorize(user,"admin","executive","manager")
     clinic=db.get(Clinic,cid)
     if not clinic: raise HTTPException(404,"找不到診所")
-    emps=list(db.scalars(select(Employee).where(Employee.active==True).order_by(Employee.region,Employee.name)))
+    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False).order_by(Employee.region,Employee.name)))
     return templates.TemplateResponse("clinic_edit.html",{"request":request,"user":user,"company":COMPANY_NAME,"clinic":clinic,"employees":emps})
 
 @app.post("/clinics/{cid}/edit")
@@ -1040,7 +1041,7 @@ def clinic_edit(cid:int,code:str=Form(...),name:str=Form(...),region:str=Form(..
 
 @app.get("/activities",response_class=HTMLResponse)
 def activities_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    rows=list(db.scalars(select(Activity).order_by(Activity.activity_date.desc(),Activity.id.desc()).limit(300))); emps=list(db.scalars(select(Employee).where(Employee.active==True))); clinics=list(db.scalars(select(Clinic)))
+    rows=list(db.scalars(select(Activity).order_by(Activity.activity_date.desc(),Activity.id.desc()).limit(300))); emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False))); clinics=list(db.scalars(select(Clinic)))
     return templates.TemplateResponse("activities.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps,"clinics":clinics})
 
 @app.post("/activities")
