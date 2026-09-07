@@ -76,3 +76,10 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 - Corrects three legacy demo sales whose product references shifted after NovaBright was inserted into the product seed list.
 - Correct rows are: 張主任 Ronkylä ×24 = NT$1,440,000; 李專員 探頭系列 ×38 = NT$950,000; 王區經理 Pico-K ×1 = NT$1,500,000.
 - Existing PostgreSQL demo rows matching the exact legacy fingerprints are repaired automatically at startup. Other sales are left unchanged.
+
+
+## v27 Demo Data Cleanup
+- One-time cleanup removes the legacy built-in demo clinics C001-C005 and all sales/CRM activities linked to those clinics.
+- Employee/KPI settings, product masters and user accounts are preserved.
+- Demo customer/sales/CRM seeding is disabled by default (`SEED_DEMO_DATA=false`).
+- A database flag (`v27_demo_customer_cleanup_done`) ensures the cleanup runs only once and will not delete future real data on Render restarts.

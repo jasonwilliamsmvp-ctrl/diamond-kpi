@@ -28,7 +28,7 @@ COMPANY_NAME = os.getenv("COMPANY_NAME", "晶鑽生醫")
 APP_ENV = os.getenv("APP_ENV", "development")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin123!")
-SEED_DEMO_DATA = os.getenv("SEED_DEMO_DATA", "true").lower() == "true"
+SEED_DEMO_DATA = os.getenv("SEED_DEMO_DATA", "false").lower() == "true"
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, future=True, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
@@ -133,6 +133,13 @@ class KPIAction(Base):
     decided_by: Mapped[str] = mapped_column(String(80), default="")
     employee: Mapped[Employee] = relationship()
 
+
+class SystemFlag(Base):
+    __tablename__ = "system_flags"
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -210,12 +217,13 @@ def startup():
             for col, ddl in [("contact_person","TEXT DEFAULT ''"),("phone","TEXT DEFAULT ''"),("address","TEXT DEFAULT ''")]:
                 if col not in clinic_cols:
                     conn.execute(text(f"ALTER TABLE clinics ADD COLUMN {col} {ddl}"))
+
     db = SessionLocal()
     try:
+        # Always ensure one administrator exists. Demo login accounts are only created
+        # when SEED_DEMO_DATA is explicitly enabled. v27 defaults this flag to false.
         if not db.scalar(select(func.count(User.id))):
-            users = [
-                User(username=ADMIN_USERNAME, full_name="系統管理員", password_hash=pwd.hash(ADMIN_PASSWORD), role="admin", region="全區")
-            ]
+            users = [User(username=ADMIN_USERNAME, full_name="系統管理員", password_hash=pwd.hash(ADMIN_PASSWORD), role="admin", region="全區")]
             if SEED_DEMO_DATA:
                 users.extend([
                     User(username="ceo", full_name="總經理", password_hash=pwd.hash("Ceo123!"), role="executive", region="全區"),
@@ -223,73 +231,64 @@ def startup():
                     User(username="sales", full_name="業務示範", password_hash=pwd.hash("Sales123!"), role="sales", region="北區"),
                 ])
             db.add_all(users)
+
+        # Preserve the employee / KPI starter structure, but no longer create demo
+        # clinics, sales or CRM activities on a clean database.
         if not db.scalar(select(func.count(Employee.id))):
-            emps = [
+            db.add_all([
                 Employee(employee_no="E001", name="陳協理", title="協理", region="全區", monthly_target=0),
                 Employee(employee_no="E101", name="王區經理", title="區域經理", region="北區", monthly_target=0),
                 Employee(employee_no="E201", name="林襄理", title="襄理", region="北區", manager="王區經理", monthly_target=2500000),
                 Employee(employee_no="E202", name="張主任", title="主任", region="中區", manager="陳協理", monthly_target=1800000),
                 Employee(employee_no="E203", name="李專員", title="專員", region="南區", manager="陳協理", monthly_target=1000000),
-            ]
-            db.add_all(emps); db.flush()
-            prods = [
-                Product(code="MET", name="METEORA", unit="盒", unit_price=120000, gross_margin=.72, monthly_target_qty=20),
-                Product(code="NEO", name="NeoFilera", unit="瓶", unit_price=80000, gross_margin=.75, monthly_target_qty=30),
-                Product(code="NVB", name="NovaBright", unit="台", unit_price=600000, gross_margin=.70, monthly_target_qty=0),
-                Product(code="RON", name="Ronkylä", unit="盒", unit_price=60000, gross_margin=.68, monthly_target_qty=50),
-                Product(code="PK", name="Pico-K", category="儀器", unit="台", unit_price=1500000, gross_margin=.55, monthly_target_qty=2),
-                Product(code="PT", name="探頭系列", category="耗材", unit="支", unit_price=25000, gross_margin=.65, monthly_target_qty=80),
-            ]
-            db.add_all(prods); db.flush()
-            clinics = [Clinic(code=f"C{i:03d}", name=n, region=r, city=c, owner_employee_id=emps[min(i-1,4)].id) for i,(n,r,c) in enumerate([
-                ("晶采醫美診所","北區","台北市"),("澄美醫美診所","北區","新北市"),("璞研診所","中區","台中市"),("雅緻醫美診所","南區","高雄市"),("悅容診所","南區","台南市")],1)]
-            db.add_all(clinics); db.flush()
-            today=date.today()
-            demo_sales=[
-                (emps[2],prods[0],clinics[0],12,1440000),(emps[2],prods[1],clinics[1],18,1440000),
-                (emps[3],prods[3],clinics[2],24,1440000),(emps[4],prods[5],clinics[3],38,950000),
-                (emps[1],prods[4],clinics[0],1,1500000),(emps[0],prods[0],clinics[4],8,960000),
-            ]
-            for e,p,c,q,a in demo_sales:
-                db.add(Sale(sale_date=today, employee_id=e.id, product_id=p.id, clinic_id=c.id, quantity=q, amount=a, gross_profit=a*p.gross_margin))
-            stages=["拜訪","拜訪","提案","報價","成交","回購","拜訪","提案"]
-            for i,st in enumerate(stages):
-                db.add(Activity(activity_date=today, employee_id=emps[i%len(emps)].id, clinic_id=clinics[i%len(clinics)].id, stage=st, outcome="示範資料"))
-        # Ensure NovaBright is present even on an existing Render/PostgreSQL database.
-        novabright = db.scalar(select(Product).where(Product.code == "NVB"))
-        if not novabright:
-            db.add(Product(code="NVB", name="NovaBright", category="設備", unit="台", unit_price=600000, gross_margin=.70, monthly_target_qty=0, active=True))
-        else:
-            # Product master correction only. Historical Sale.amount values are intentionally preserved.
-            novabright.unit = "台"
-            novabright.unit_price = 600000
+            ])
 
-        # v23: repair the three legacy demo rows whose product references were shifted
-        # when NovaBright was inserted into the seed product list in v17.
-        # The correction is intentionally fingerprinted by employee + current product +
-        # quantity + amount, so real customer transactions are not broadly rewritten.
-        demo_repairs = [
-            ("張主任", "NVB", 24, 1440000, "RON"),
-            ("李專員", "PK", 38, 950000, "PT"),
-            ("王區經理", "RON", 1, 1500000, "PK"),
+        product_defs = [
+            ("MET", "METEORA", "注射產品", "盒", 120000, .72, 20),
+            ("NEO", "NeoFilera", "注射產品", "瓶", 80000, .75, 30),
+            ("NVB", "NovaBright", "設備", "台", 600000, .70, 0),
+            ("RON", "Ronkylä", "注射產品", "盒", 60000, .68, 50),
+            ("PK", "Pico-K", "儀器", "台", 1500000, .55, 2),
+            ("PT", "探頭系列", "耗材", "支", 25000, .65, 80),
         ]
-        for employee_name, wrong_code, qty, amount, correct_code in demo_repairs:
-            employee = db.scalar(select(Employee).where(Employee.name == employee_name))
-            wrong_product = db.scalar(select(Product).where(Product.code == wrong_code))
-            correct_product = db.scalar(select(Product).where(Product.code == correct_code))
-            if not employee or not wrong_product or not correct_product:
-                continue
-            rows = db.scalars(
-                select(Sale).where(
-                    Sale.employee_id == employee.id,
-                    Sale.product_id == wrong_product.id,
-                    Sale.quantity == qty,
-                    Sale.amount == amount,
+        for code, name, category, unit, unit_price, margin, target_qty in product_defs:
+            prod = db.scalar(select(Product).where(Product.code == code))
+            if not prod:
+                db.add(Product(code=code, name=name, category=category, unit=unit, unit_price=unit_price, gross_margin=margin, monthly_target_qty=target_qty, active=True))
+
+        db.flush()
+
+        # v27 one-time production cleanup. Remove only the legacy built-in demo
+        # customer dataset shown in earlier versions, while keeping employees, KPI
+        # settings, product masters and user accounts intact. The SystemFlag makes
+        # this idempotent so future real data is never deleted on every restart.
+        cleanup_key = "v27_demo_customer_cleanup_done"
+        if not db.get(SystemFlag, cleanup_key):
+            demo_codes = ["C001", "C002", "C003", "C004", "C005"]
+            demo_names = ["晶采醫美診所", "澄美醫美診所", "璞研診所", "雅緻醫美診所", "悅容診所"]
+            demo_clinics = db.scalars(
+                select(Clinic).where(
+                    (Clinic.code.in_(demo_codes)) | (Clinic.name.in_(demo_names))
                 )
             ).all()
-            for sale in rows:
-                sale.product_id = correct_product.id
-                sale.gross_profit = float(sale.amount or 0) * float(correct_product.gross_margin or 0)
+            demo_clinic_ids = [c.id for c in demo_clinics]
+            if demo_clinic_ids:
+                activities = db.scalars(select(Activity).where(Activity.clinic_id.in_(demo_clinic_ids))).all()
+                for row in activities:
+                    db.delete(row)
+                sales = db.scalars(select(Sale).where(Sale.clinic_id.in_(demo_clinic_ids))).all()
+                for row in sales:
+                    db.delete(row)
+                db.flush()
+                for clinic in demo_clinics:
+                    db.delete(clinic)
+            db.add(SystemFlag(key=cleanup_key, value=f"completed {datetime.utcnow().isoformat()}"))
+
+        # Keep the NovaBright master correction, without recalculating historical sales.
+        novabright = db.scalar(select(Product).where(Product.code == "NVB"))
+        if novabright:
+            novabright.unit = "台"
+            novabright.unit_price = 600000
 
         db.commit()
     finally:
