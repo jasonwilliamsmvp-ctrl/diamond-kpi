@@ -792,7 +792,7 @@ def employee_toggle_active(eid:int, db:Session=Depends(db_session), user:User=De
     if not e: raise HTTPException(404)
     e.active=not e.active
     db.commit(); audit(db,user,"啟用" if e.active else "停用","員工",f"{e.employee_no} {e.name}")
-    return RedirectResponse("/employees?status="+("active" if e.active else "inactive"),303)
+    return RedirectResponse("/employees?status="+("inactive&reactivated=1" if e.active else "active&deactivated=1"),303)
 
 @app.post("/employees/{eid}/delete")
 def employee_delete(eid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
@@ -805,7 +805,7 @@ def employee_delete(eid:int,db:Session=Depends(db_session),user:User=Depends(cur
     refs+=(db.scalar(select(func.count(KPIAction.id)).where(KPIAction.employee_id==eid)) or 0)
     if refs:
         e.active=False; db.commit(); audit(db,user,"停用（保留歷史）","員工",f"{e.employee_no} {e.name}，關聯紀錄 {refs} 筆")
-        return RedirectResponse("/employees?status=inactive&protected=1",303)
+        return RedirectResponse("/employees?status=active&protected=1",303)
     detail=f"{e.employee_no} {e.name}"
     db.delete(e); db.commit(); audit(db,user,"永久刪除","員工",detail)
     return RedirectResponse("/employees?status=all&deleted=1",303)

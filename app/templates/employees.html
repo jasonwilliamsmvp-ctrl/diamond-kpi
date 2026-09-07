@@ -9,6 +9,8 @@
   </div>
   {% if request.query_params.get('protected') %}<div class="notice warning">此業務已有歷史業績／CRM／客戶或 KPI 紀錄，因此已改為「停用」，歷史資料完整保留。</div>{% endif %}
   {% if request.query_params.get('deleted') %}<div class="notice success">沒有任何關聯紀錄的業務已永久刪除。</div>{% endif %}
+  {% if request.query_params.get('deactivated') %}<div class="notice warning">業務已停用；目前仍停留在「在職」名單，該員工已從此清單移除。可切到「已停用」重新啟用。</div>{% endif %}
+  {% if request.query_params.get('reactivated') %}<div class="notice success">業務已重新啟用；目前仍停留在「已停用」名單，可切回「在職」查看。</div>{% endif %}
   <div class="table-scroll"><table class="target-table"><thead><tr><th>員工</th><th>職級 / 區域</th><th>月業績目標</th><th>CRM 完整度</th><th>拜訪數</th><th>新增診所</th><th>新品導入</th><th>狀態</th><th>操作</th></tr></thead><tbody>
   {% for r in rows %}
   {% set fid='kpi-' ~ r.id %}
@@ -22,9 +24,10 @@
       <td><div class="target-input"><input form="{{ fid }}" name="new_clinic_target" type="number" min="0" step="1" value="{{ '%.0f'|format(r.new_clinic_target or 2) }}" required><span>家</span></div></td>
       <td><div class="target-input"><input form="{{ fid }}" name="new_product_target" type="number" min="0" step="1" value="{{ '%.0f'|format(r.new_product_target or 1) }}" required><span>家</span></div></td>
       <td><span class="status-badge {% if r.active %}on{% else %}off{% endif %}">{{ '在職' if r.active else '已停用' }}</span></td>
-      <td><div class="employee-actions"><button class="small" form="{{ fid }}" type="submit">儲存 KPI</button>
+      <td><div class="employee-actions">
+        <button class="small action-save" form="{{ fid }}" type="submit">儲存 KPI</button>
         <form method="post" action="/employees/{{ r.id }}/toggle-active"><button class="small secondary" type="submit" onclick="return confirm('{{ '確定停用' if r.active else '確定重新啟用' }} {{ r.name }}？')">{{ '停用業務' if r.active else '重新啟用' }}</button></form>
-        {% if user.role=='admin' %}<form method="post" action="/employees/{{ r.id }}/delete"><button class="small danger" type="submit" onclick="return confirm('{% if can_delete[r.id] %}確定永久刪除 {{ r.name }}？此操作無法復原。{% else %}{{ r.name }} 已有歷史紀錄，系統不會實體刪除，而會安全停用並保留歷史資料。確定繼續？{% endif %}')">{{ '永久刪除' if can_delete[r.id] else '刪除／停用' }}</button></form>{% endif %}
+        {% if user.role=='admin' and can_delete[r.id] %}<form method="post" action="/employees/{{ r.id }}/delete"><button class="small danger" type="submit" onclick="return confirm('確定永久刪除 {{ r.name }}？此員工沒有任何歷史關聯紀錄，此操作無法復原。')">永久刪除</button></form>{% endif %}
       </div></td>
     {% else %}
       <td>NT$ {{ '{:,.0f}'.format(dynamic_targets[r.id] if r.title in ['區域經理','協理'] else r.monthly_target) }}</td><td>{{ '%.0f'|format(r.crm_target or 100) }}%</td><td>{{ '%.0f'|format(r.visit_target or 40) }} 家</td><td>{{ '%.0f'|format(r.new_clinic_target or 2) }} 家</td><td>{{ '%.0f'|format(r.new_product_target or 1) }} 家</td><td>{{ '在職' if r.active else '已停用' }}</td><td>—</td>
