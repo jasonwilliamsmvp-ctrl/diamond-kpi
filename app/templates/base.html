@@ -1,6 +1,11 @@
 <!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ company }} KPI</title><link rel="stylesheet" href="/static/style.css"></head>
 <body><aside class="sidebar light-sidebar"><div class="brand light-brand"><div class="gem logo-gem">◇</div><div><b>{{ company }}</b><small>DIAMOND BIOTECHNOLOGY</small></div></div><nav>
+{% if user.role == 'sales' %}
+<a class="{{ 'active' if request.url.path.startswith('/sales-portal') else '' }}" href="/sales-portal">▣　我的客戶 Dashboard</a>
+<a class="{{ 'active' if request.url.path.startswith('/security') else '' }}" href="/security">🔒　帳號安全</a>
+{% else %}
 <a class="{{ 'active' if request.url.path=='/' else '' }}" href="/">⌂　首頁總覽</a>
+{% if user.employee_id %}<a class="{{ 'active' if request.url.path.startswith('/sales-portal') else '' }}" href="/sales-portal">▣　我的客戶 Dashboard</a>{% endif %}
 <a class="{{ 'active' if request.url.path.startswith('/sales') else '' }}" href="/sales">▦　業績管理</a>
 <a class="{{ 'active' if request.url.path.startswith('/clinics') else '' }}" href="/clinics">♧　客戶管理</a>
 <a class="{{ 'active' if request.url.path.startswith('/products') else '' }}" href="/products">◈　產品管理</a>
@@ -9,6 +14,14 @@
 {% if user.role in ['admin','executive'] %}<a class="{{ 'active' if request.url.path.startswith('/kpi-actions') else '' }}" href="/kpi-actions">✓　KPI 處置審核</a>{% endif %}
 {% if user.role=='admin' %}<a class="{{ 'active' if request.url.path.startswith('/users') else '' }}" href="/users">⚙　帳號與權限</a>{% endif %}
 {% if user.role in ['admin','executive'] %}<a class="{{ 'active' if request.url.path.startswith('/audit') else '' }}" href="/audit">▥　稽核紀錄</a>{% endif %}
+<a class="{{ 'active' if request.url.path.startswith('/security') else '' }}" href="/security">🔒　帳號安全</a>
+{% endif %}
 </nav><div class="sidefoot light-foot"><small>目前使用者</small><div><b>{{ user.full_name }}</b></div><small>{{ user.role }} · {{ user.region }}</small><a href="/logout">登出</a></div></aside>
 <main class="app-main"><header class="app-header"><div><h1>{% block title %}KPI Dashboard{% endblock %}</h1><p>{% block subtitle %}即時掌握營收、毛利、客戶與團隊績效{% endblock %}</p></div><div class="user-chip">● {{ user.full_name }}<small>{{ user.region }}</small></div></header>{% block content %}{% endblock %}</main>
-<script>document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',()=>{const b=f.querySelector('button[type=submit]');if(b){b.disabled=true;b.textContent='處理中…'}}));</script></body></html>
+<script>
+const csrfToken={{ request.cookies.get('csrf_token','')|tojson }};
+document.querySelectorAll('form[method="post"],form[method="POST"]').forEach(f=>{
+  if(csrfToken && !f.querySelector('input[name="csrf_token"]')){const i=document.createElement('input');i.type='hidden';i.name='csrf_token';i.value=csrfToken;f.appendChild(i);}
+  f.addEventListener('submit',()=>{const b=f.querySelector('button[type=submit]');if(b){b.disabled=true;b.dataset.originalText=b.textContent;b.textContent='處理中…'}});
+});
+</script></body></html>

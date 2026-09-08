@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}我的客戶 Dashboard{% endblock %}
+{% block subtitle %}每日業績、客戶分級、拜訪紅綠燈與自動行程{% endblock %}
+{% block content %}
+{% if not employee %}
+<section class="panel"><h2>尚未綁定業務身分</h2><p>請由系統管理員到「帳號與權限」把此登入帳號綁定到對應的員工資料後，即可使用業務 Dashboard。</p></section>
+{% else %}
+<section class="kpi-grid sales-kpis">
+  <div class="kpi-card"><small>今日銷售業績</small><strong>NT$ {{ '{:,.0f}'.format(today_totals.sales) }}</strong></div>
+  <div class="kpi-card"><small>今日出貨業績</small><strong>NT$ {{ '{:,.0f}'.format(today_totals.shipment) }}</strong></div>
+  <div class="kpi-card"><small>今日收款業績</small><strong>NT$ {{ '{:,.0f}'.format(today_totals.collection) }}</strong></div>
+  <div class="kpi-card"><small>{{ ref.strftime('%Y/%m') }} 銷售累計</small><strong>NT$ {{ '{:,.0f}'.format(totals.sales) }}</strong></div>
+  <div class="kpi-card"><small>{{ ref.strftime('%Y/%m') }} 出貨累計</small><strong>NT$ {{ '{:,.0f}'.format(totals.shipment) }}</strong></div>
+  <div class="kpi-card"><small>{{ ref.strftime('%Y/%m') }} 收款累計</small><strong>NT$ {{ '{:,.0f}'.format(totals.collection) }}</strong></div>
+</section>
+
+<section class="panel formpanel"><h2>每日業績輸入</h2><p class="muted">產品直接連動主管端產品主檔；業務不建立產品。</p>
+<form method="post" action="/sales-portal/performance" class="formgrid wide-form">
+<label>日期<input type="date" name="entry_date" value="{{ today.isoformat() }}" required></label>
+<label>客戶<select name="clinic_id" required>{% for c in clinics %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select></label>
+<label>產品<select name="product_id" id="productSelect" required>{% for p in products %}<option value="{{p.id}}" data-price="{{p.unit_price}}">{{p.name}}｜{{p.unit}}｜NT$ {{'{:,.0f}'.format(p.unit_price)}}</option>{% endfor %}</select></label>
+<label>數量<input type="number" name="quantity" step="0.01" min="0" value="1"></label>
+<label>銷售業績<input type="number" name="sales_amount" min="0" step="1" value="0"></label>
+<label>出貨業績<input type="number" name="shipment_amount" min="0" step="1" value="0"></label>
+<label>收款業績<input type="number" name="collection_amount" min="0" step="1" value="0"></label>
+<label class="span2">備註<input name="note" placeholder="例：客戶下單、部分出貨、收款條件…"></label>
+<button type="submit">儲存今日業績</button></form></section>
+
+<section class="panel"><div class="panel-head"><div><h2>客戶拜訪紅綠燈</h2><p class="muted">A 每週、B 每月、C 每季、D 每半年；完成拜訪後系統自動算下一次。</p></div></div>
+<div class="table-scroll"><table class="visit-table"><thead><tr><th>燈號</th><th>客戶</th><th>分類</th><th>上次拜訪</th><th>應拜訪日</th><th>建議行程</th><th>狀態</th><th>操作</th></tr></thead><tbody>
+{% for r in clinic_rows %}<tr class="visit-{{r.light}}"><td><span class="traffic-dot {{r.light}}"></span></td><td><a class="clinic-name-link" href="/clinics/{{r.clinic.id}}"><b>{{r.clinic.name}}</b></a><small>{{r.clinic.city}}</small></td><td><form method="post" action="/sales-portal/clinics/{{r.clinic.id}}/class" class="inline-form"><select name="customer_class" onchange="this.form.submit()">{% for k,v in class_labels.items() %}<option value="{{k}}" {% if r.clinic.customer_class==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></form></td><td>{{r.last_visit or '尚未拜訪'}}</td><td>{{r.due}}</td><td><b>{{r.recommended}}</b></td><td><span class="pill {{r.light}}">{{r.light_label}}</span></td><td><form method="post" action="/sales-portal/clinics/{{r.clinic.id}}/visit"><button type="submit" class="smallbtn">完成拜訪</button></form></td></tr>{% else %}<tr><td colspan="8">尚無客戶，請先新增自己的客戶。</td></tr>{% endfor %}
+</tbody></table></div></section>
+
+<section class="panel formpanel"><h2>新增我的客戶</h2><form method="post" action="/sales-portal/clinics" class="formgrid wide-form">
+<label>客戶代碼<input name="code" required></label><label>診所名稱<input name="name" required></label><label>城市<input name="city" required></label><label>聯絡人<input name="contact_person"></label><label>電話<input name="phone"></label><label class="span2">地址<input name="address"></label><label>客戶分類<select name="customer_class"><option value="A">A｜每週</option><option value="B">B｜每月</option><option value="C" selected>C｜每季</option><option value="D">D｜每半年</option></select></label><button type="submit">新增客戶</button></form></section>
+
+<section class="panel"><div class="panel-head"><div><h2>自動拜訪行事曆</h2><p class="muted">逾期客戶自動排到今天；未逾期依各客戶分級的下一拜訪日排入。</p></div><div class="month-nav"><a href="/sales-portal?month={{prev_month}}">← 上月</a><b>{{ref.year}} 年 {{ref.month}} 月</b><a href="/sales-portal?month={{next_month}}">下月 →</a></div></div>
+<div class="calendar-grid calendar-head">{% for d in ['一','二','三','四','五','六','日'] %}<div>{{d}}</div>{% endfor %}</div>
+<div class="calendar-grid">{% for week in weeks %}{% for cell in week %}<div class="calendar-cell {% if cell.day==today.day and ref.year==today.year and ref.month==today.month %}today{% endif %}">{% if cell.day %}<span class="daynum">{{cell.day}}</span>{% for item in cell.visits %}<div class="calendar-visit {{item.light}}"><b>{{item.clinic.name}}</b><small>{{item.clinic.customer_class}} 類 · {{item.light_label}}</small></div>{% endfor %}{% endif %}</div>{% endfor %}{% endfor %}</div></section>
+
+<section class="panel"><h2>{{ref.strftime('%Y/%m')}} 每日業績明細</h2><div class="table-scroll"><table><thead><tr><th>日期</th><th>客戶</th><th>產品</th><th>數量</th><th>銷售</th><th>出貨</th><th>收款</th><th>備註</th></tr></thead><tbody>{% for r in perf %}<tr><td>{{r.entry_date}}</td><td>{{r.clinic.name}}</td><td>{{r.product.name}}</td><td>{{r.quantity}}</td><td>NT$ {{'{:,.0f}'.format(r.sales_amount)}}</td><td>NT$ {{'{:,.0f}'.format(r.shipment_amount)}}</td><td>NT$ {{'{:,.0f}'.format(r.collection_amount)}}</td><td>{{r.note}}</td></tr>{% else %}<tr><td colspan="8">本月尚無業績紀錄</td></tr>{% endfor %}</tbody></table></div></section>
+
+<section class="panel"><h2>產品主檔（主管端同步 / 唯讀）</h2><div class="product-readonly">{% for p in products %}<div class="product-mini"><b>{{p.name}}</b><span>{{p.category}} · {{p.unit}}</span><strong>NT$ {{'{:,.0f}'.format(p.unit_price)}}</strong></div>{% endfor %}</div></section>
+{% endif %}
+{% endblock %}

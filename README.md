@@ -83,3 +83,24 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 - Employee/KPI settings, product masters and user accounts are preserved.
 - Demo customer/sales/CRM seeding is disabled by default (`SEED_DEMO_DATA=false`).
 - A database flag (`v27_demo_customer_cleanup_done`) ensures the cleanup runs only once and will not delete future real data on Render restarts.
+
+## v28 — 業務 Customer Management Dashboard 初版
+
+新增 `/sales-portal` 業務工作台：
+- 每日輸入三種業績：銷售業績、出貨業績、收款業績。
+- 產品直接讀取主管端共用 Product master，業務端唯讀，不另建產品。
+- 客戶分類 A/B/C/D：A 每週、B 每月、C 每季、D 每半年。
+- 拜訪紅黃綠燈：逾期紅燈、3 天內黃燈、其餘綠燈。
+- 完成拜訪後自動計算下一次拜訪日。
+- 月曆自動把應拜訪客戶排進建議日期；逾期客戶排到今天。
+- 業務可新增自己的客戶並修改客戶分類。
+- 帳號可綁定 Employee，確保業務只看到/輸入自己的客戶與業績。
+
+### v28 初版資料表
+`daily_performance` 保存業務每日銷售 / 出貨 / 收款三種數字，與既有主管 KPI 的 `sales` 表分開，避免初版直接改動既有主管 KPI 計算口徑。後續確認口徑後，可再把指定指標同步到主管 KPI。
+
+## v31 — Production Security + Sales CRM
+
+v31 合併 v28～v31 路線：業務 Customer Dashboard、資料範圍隔離、CSRF / security headers / login lockout / audit trail，以及 TOTP MFA 與 staging / production 上線流程。
+
+正式部署前請先閱讀 `SECURITY_DEPLOYMENT.md`。Production 預設會強制 Admin / Executive / Manager 設定 MFA。

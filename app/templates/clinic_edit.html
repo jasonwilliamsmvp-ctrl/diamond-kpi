@@ -6,5 +6,5 @@
 <label>聯絡人<input name="contact_person" value="{{clinic.contact_person or ''}}"></label><label>電話<input name="phone" value="{{clinic.phone or ''}}"></label>
 <label class="wide">地址<input name="address" value="{{clinic.address or ''}}"></label>
 <label>負責業務<select name="owner_employee_id">{% for e in employees %}<option value="{{e.id}}" {% if clinic.owner_employee_id==e.id %}selected{% endif %}>{{e.name}}（{{e.region}}・{{e.title}}）</option>{% endfor %}</select></label>
-<label>狀態<select name="status">{% for s in ['有效客戶','潛在客戶','暫停交易'] %}<option {% if clinic.status==s %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label>
+<label>客戶分類<select name="customer_class">{% for k in ['A','B','C','D'] %}<option value="{{k}}" {% if clinic.customer_class==k %}selected{% endif %}>{{k}} 類</option>{% endfor %}</select></label><label>狀態<select name="status">{% for s in ['有效客戶','潛在客戶','暫停交易'] %}<option {% if clinic.status==s %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label>
 <button type="submit">儲存修改</button></form></section>{% endblock %}

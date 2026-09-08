@@ -1,10 +1,18 @@
 import csv
 import io
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 import json
 import calendar
+import secrets
+import hashlib
+from contextvars import ContextVar
+from urllib.parse import parse_qs
+import base64
+import hmac
+import struct
+import time
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse, Response
@@ -12,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import URLSafeSerializer, BadSignature
 from passlib.context import CryptContext
-from sqlalchemy import create_engine, String, Integer, Float, Date, DateTime, ForeignKey, Boolean, select, func, text
+from sqlalchemy import create_engine, String, Integer, Float, Date, DateTime, ForeignKey, Boolean, select, func, text, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session, sessionmaker
 from openpyxl import load_workbook
 
@@ -45,7 +53,14 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(30), default="sales")
     region: Mapped[str] = mapped_column(String(30), default="全區")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    mfa_secret: Mapped[str] = mapped_column(String(64), default="")
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -87,6 +102,7 @@ class Clinic(Base):
     address: Mapped[str] = mapped_column(String(255), default="")
     owner_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="有效客戶")
+    customer_class: Mapped[str] = mapped_column(String(2), default="C")
     last_order_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     owner: Mapped[Optional[Employee]] = relationship()
 
@@ -118,6 +134,23 @@ class Activity(Base):
     employee: Mapped[Employee] = relationship()
     clinic: Mapped[Clinic] = relationship()
 
+class DailyPerformance(Base):
+    __tablename__ = "daily_performance"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    clinic_id: Mapped[int] = mapped_column(ForeignKey("clinics.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+    sales_amount: Mapped[float] = mapped_column(Float, default=0)
+    shipment_amount: Mapped[float] = mapped_column(Float, default=0)
+    collection_amount: Mapped[float] = mapped_column(Float, default=0)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    employee: Mapped[Employee] = relationship()
+    clinic: Mapped[Clinic] = relationship()
+    product: Mapped[Product] = relationship()
+
 class KPIAction(Base):
     __tablename__ = "kpi_actions"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -148,9 +181,43 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(100))
     entity: Mapped[str] = mapped_column(String(50))
     detail: Mapped[str] = mapped_column(String(500), default="")
+    ip_address: Mapped[str] = mapped_column(String(64), default="")
+    method: Mapped[str] = mapped_column(String(12), default="")
+    path: Mapped[str] = mapped_column(String(255), default="")
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 signer = URLSafeSerializer(SECRET_KEY, salt="diamond-session")
+preauth_signer = URLSafeSerializer(SECRET_KEY, salt="diamond-preauth")
+_request_meta: ContextVar[dict] = ContextVar("request_meta", default={})
+PRIVILEGED_ROLES = {"admin", "executive", "manager"}
+LOGIN_MAX_FAILURES = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
+LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
+SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", "28800"))
+FORCE_PRIVILEGED_MFA = os.getenv("FORCE_PRIVILEGED_MFA", "true").lower() == "true"
+
+def _new_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+def _totp_code(secret: str, for_time: Optional[int]=None, step: int=30, digits: int=6) -> str:
+    ts=int(for_time if for_time is not None else time.time())//step
+    padded=secret + "="*((8-len(secret)%8)%8)
+    key=base64.b32decode(padded.upper())
+    msg=struct.pack(">Q",ts)
+    digest=hmac.new(key,msg,hashlib.sha1).digest()
+    offset=digest[-1]&0x0F
+    dbc=struct.unpack(">I",digest[offset:offset+4])[0]&0x7fffffff
+    return str(dbc%(10**digits)).zfill(digits)
+
+def _verify_totp(secret: str, code: str, valid_window: int=1) -> bool:
+    now=int(time.time())
+    clean=(code or "").strip()
+    return any(secrets.compare_digest(_totp_code(secret,now+(i*30)),clean) for i in range(-valid_window,valid_window+1))
+
+def _totp_uri(secret: str, username: str) -> str:
+    from urllib.parse import quote
+    label=quote(f"{COMPANY_NAME}:{username}")
+    return f"otpauth://totp/{label}?secret={secret}&issuer={quote(COMPANY_NAME)}&period=30&digits=6"
+
 app = FastAPI(title="Diamond KPI Enterprise")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "app", "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "app", "templates"))
@@ -164,6 +231,13 @@ def db_session():
         db.close()
 
 
+def _client_ip(request: Request) -> str:
+    forwarded=(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "")
+
+def _csrf_expected(request: Request) -> str:
+    return request.cookies.get("csrf_token", "")
+
 def current_user(request: Request, db: Session = Depends(db_session)) -> User:
     token = request.cookies.get("diamond_session")
     if not token:
@@ -175,21 +249,85 @@ def current_user(request: Request, db: Session = Depends(db_session)) -> User:
     user = db.get(User, data.get("uid"))
     if not user or not user.active:
         raise HTTPException(401)
+    mfa_required = user.mfa_enabled or (APP_ENV == "production" and FORCE_PRIVILEGED_MFA and user.role in PRIVILEGED_ROLES)
+    if mfa_required and not data.get("mfa_verified"):
+        if request.url.path not in {"/mfa", "/mfa/setup", "/logout"}:
+            raise HTTPException(428, "MFA required")
     return user
 
-
 def audit(db: Session, user: User, action: str, entity: str, detail: str = ""):
-    db.add(AuditLog(username=user.username, action=action, entity=entity, detail=detail[:500]))
+    meta=_request_meta.get({})
+    db.add(AuditLog(username=user.username, action=action, entity=entity, detail=detail[:500],
+                    ip_address=meta.get("ip",""), method=meta.get("method",""), path=meta.get("path","")))
     db.commit()
-
 
 def authorize(user: User, *roles: str):
     if user.role not in roles:
         raise HTTPException(403, "權限不足")
 
+def _visible_employee_ids(db: Session, user: User):
+    if user.role in ("admin","executive"):
+        return [e.id for e in db.scalars(select(Employee).where(Employee.is_deleted==False))]
+    if user.role == "manager":
+        return [e.id for e in db.scalars(select(Employee).where(Employee.region==user.region, Employee.is_deleted==False))]
+    return [user.employee_id] if user.employee_id else []
+
+def _can_access_clinic(db: Session, user: User, clinic: Clinic) -> bool:
+    if user.role in ("admin","executive"): return True
+    if user.role == "manager": return clinic.region == user.region
+    return bool(user.employee_id and clinic.owner_employee_id == user.employee_id)
+
+def _can_access_employee(user: User, employee: Employee) -> bool:
+    if user.role in ("admin","executive"): return True
+    if user.role == "manager": return employee.region == user.region
+    return bool(user.employee_id and employee.id == user.employee_id)
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    token=_request_meta.set({"ip":_client_ip(request),"method":request.method,"path":request.url.path})
+    try:
+        # Same-origin + double-submit CSRF protection for ordinary authenticated forms.
+        if request.method in {"POST","PUT","PATCH","DELETE"} and request.url.path not in {"/login","/mfa","/mfa/setup"}:
+            origin=request.headers.get("origin")
+            referer=request.headers.get("referer")
+            host=request.headers.get("host","")
+            if origin and host and host not in origin:
+                return Response("CSRF origin rejected", status_code=403)
+            if referer and host and host not in referer:
+                return Response("CSRF referer rejected", status_code=403)
+            # For standard urlencoded forms, validate hidden token without consuming downstream body.
+            ctype=request.headers.get("content-type","")
+            if "multipart/form-data" in ctype and not (origin or referer):
+                return Response("CSRF source missing", status_code=403)
+            if "application/x-www-form-urlencoded" in ctype:
+                body=await request.body()
+                values=parse_qs(body.decode("utf-8",errors="ignore"))
+                supplied=(values.get("csrf_token") or [""])[0]
+                expected=_csrf_expected(request)
+                if not expected or not secrets.compare_digest(supplied,expected):
+                    return Response("CSRF token rejected", status_code=403)
+                async def receive():
+                    return {"type":"http.request","body":body,"more_body":False}
+                request._receive=receive
+        response=await call_next(request)
+        response.headers["X-Content-Type-Options"]="nosniff"
+        response.headers["X-Frame-Options"]="DENY"
+        response.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"]="camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"]="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        if APP_ENV == "production":
+            response.headers["Strict-Transport-Security"]="max-age=31536000; includeSubDomains"
+        return response
+    finally:
+        _request_meta.reset(token)
+
 @app.exception_handler(401)
 async def unauthorized(request: Request, exc):
     return RedirectResponse("/login", status_code=303)
+
+@app.exception_handler(428)
+async def mfa_required_handler(request: Request, exc):
+    return RedirectResponse("/mfa/setup", status_code=303)
 
 @app.on_event("startup")
 def startup():
@@ -206,6 +344,17 @@ def startup():
             conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS contact_person VARCHAR(100) DEFAULT ''"))
             conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT ''"))
             conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS address VARCHAR(255) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE clinics ADD COLUMN IF NOT EXISTS customer_class VARCHAR(2) DEFAULT 'C'"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS employee_id INTEGER NULL"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret VARCHAR(64) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER DEFAULT 0"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP NULL"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP NULL"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP NULL"))
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(64) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS method VARCHAR(12) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS path VARCHAR(255) DEFAULT ''"))
         elif engine.dialect.name == "sqlite":
             cols = {r[1] for r in conn.execute(text("PRAGMA table_info(employees)"))}
             for col, default in [("crm_target",100),("visit_target",40),("new_clinic_target",2),("new_product_target",1)]:
@@ -214,16 +363,28 @@ def startup():
             if "is_deleted" not in cols:
                 conn.execute(text("ALTER TABLE employees ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
             clinic_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(clinics)"))}
-            for col, ddl in [("contact_person","TEXT DEFAULT ''"),("phone","TEXT DEFAULT ''"),("address","TEXT DEFAULT ''")]:
+            for col, ddl in [("contact_person","TEXT DEFAULT ''"),("phone","TEXT DEFAULT ''"),("address","TEXT DEFAULT ''"),("customer_class","TEXT DEFAULT 'C'")]:
                 if col not in clinic_cols:
                     conn.execute(text(f"ALTER TABLE clinics ADD COLUMN {col} {ddl}"))
+            user_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
+            if "employee_id" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN employee_id INTEGER NULL"))
+            for col, ddl in [("mfa_secret","TEXT DEFAULT ''"),("mfa_enabled","BOOLEAN DEFAULT 0"),("failed_login_count","INTEGER DEFAULT 0"),("locked_until","DATETIME NULL"),("last_login_at","DATETIME NULL"),("password_changed_at","DATETIME NULL")]:
+                if col not in user_cols:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+            audit_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audit_logs)"))}
+            for col, ddl in [("ip_address","TEXT DEFAULT ''"),("method","TEXT DEFAULT ''"),("path","TEXT DEFAULT ''")]:
+                if col not in audit_cols:
+                    conn.execute(text(f"ALTER TABLE audit_logs ADD COLUMN {col} {ddl}"))
 
     db = SessionLocal()
     try:
         # Always ensure one administrator exists. Demo login accounts are only created
         # when SEED_DEMO_DATA is explicitly enabled. v27 defaults this flag to false.
         if not db.scalar(select(func.count(User.id))):
-            users = [User(username=ADMIN_USERNAME, full_name="系統管理員", password_hash=pwd.hash(ADMIN_PASSWORD), role="admin", region="全區")]
+            if APP_ENV=="production" and ADMIN_PASSWORD=="Admin123!":
+                raise RuntimeError("Production requires a non-default ADMIN_PASSWORD environment secret")
+            users = [User(username=ADMIN_USERNAME, full_name="系統管理員", password_hash=pwd.hash(ADMIN_PASSWORD), role="admin", region="全區", password_changed_at=datetime.utcnow())]
             if SEED_DEMO_DATA:
                 users.extend([
                     User(username="ceo", full_name="總經理", password_hash=pwd.hash("Ceo123!"), role="executive", region="全區"),
@@ -299,29 +460,97 @@ def startup():
 def health():
     return {"status": "ok", "service": "diamond-kpi"}
 
+def _auth_event(db:Session, username:str, action:str, detail:str=""):
+    meta=_request_meta.get({})
+    db.add(AuditLog(username=(username or "unknown")[:80], action=action, entity="登入安全", detail=detail[:500], ip_address=meta.get("ip",""), method=meta.get("method",""), path=meta.get("path","")))
+    db.commit()
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "company": COMPANY_NAME})
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...), db: Session = Depends(db_session)):
+def login(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(db_session)):
     user = db.scalar(select(User).where(User.username == username))
-    if not user or not pwd.verify(password, user.password_hash):
+    now=datetime.utcnow()
+    if user and user.locked_until and user.locked_until > now:
+        _auth_event(db,username,"登入封鎖","帳號仍在暫時鎖定期間")
+        return RedirectResponse("/login?locked=1", status_code=303)
+    if not user or not user.active or not pwd.verify(password, user.password_hash):
+        if user:
+            user.failed_login_count=int(user.failed_login_count or 0)+1
+            if user.failed_login_count >= LOGIN_MAX_FAILURES:
+                user.locked_until=now+timedelta(minutes=LOGIN_LOCK_MINUTES)
+                user.failed_login_count=0
+            db.commit()
+        _auth_event(db,username,"登入失敗","帳號不存在、停用或密碼錯誤")
         return RedirectResponse("/login?error=1", status_code=303)
-    response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        "diamond_session",
-        signer.dumps({"uid": user.id}),
-        httponly=True,
-        secure=(APP_ENV == "production"),
-        samesite="lax",
-        max_age=28800,
-    )
+    user.failed_login_count=0; user.locked_until=None; user.last_login_at=now; db.commit(); _auth_event(db,user.username,"密碼驗證成功","等待 MFA" if user.mfa_enabled else "登入成功")
+    mfa_required = user.mfa_enabled or (APP_ENV == "production" and FORCE_PRIVILEGED_MFA and user.role in PRIVILEGED_ROLES)
+    if mfa_required:
+        response=RedirectResponse("/mfa" if user.mfa_enabled else "/mfa/setup", status_code=303)
+        response.set_cookie("diamond_preauth", preauth_signer.dumps({"uid":user.id}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
+        if not user.mfa_enabled:
+            csrf=secrets.token_urlsafe(32)
+            response.set_cookie("diamond_session", signer.dumps({"uid":user.id,"mfa_verified":False}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
+            response.set_cookie("csrf_token", csrf, httponly=False, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
+        return response
+    return _issue_session(user)
+
+def _issue_session(user: User):
+    response=RedirectResponse("/", status_code=303)
+    csrf=secrets.token_urlsafe(32)
+    response.set_cookie("diamond_session", signer.dumps({"uid": user.id, "mfa_verified": True}), httponly=True, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
+    response.set_cookie("csrf_token", csrf, httponly=False, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
+    response.delete_cookie("diamond_preauth")
     return response
+
+def _preauth_user(request: Request, db: Session):
+    token=request.cookies.get("diamond_preauth")
+    if not token: return None
+    try: data=preauth_signer.loads(token)
+    except BadSignature: return None
+    return db.get(User,data.get("uid"))
+
+@app.get("/mfa", response_class=HTMLResponse)
+def mfa_page(request: Request, db: Session=Depends(db_session)):
+    user=_preauth_user(request,db)
+    if not user: return RedirectResponse("/login",303)
+    return templates.TemplateResponse("mfa.html",{"request":request,"company":COMPANY_NAME,"user":user,"mode":"verify"})
+
+@app.post("/mfa")
+def mfa_verify(request: Request, code: str=Form(...), db: Session=Depends(db_session)):
+    user=_preauth_user(request,db)
+    if not user or not user.mfa_enabled or not user.mfa_secret: return RedirectResponse("/login",303)
+    if not _verify_totp(user.mfa_secret, code.strip(), valid_window=1):
+        return RedirectResponse("/mfa?error=1",303)
+    return _issue_session(user)
+
+@app.get("/mfa/setup", response_class=HTMLResponse)
+def mfa_setup_page(request: Request, db: Session=Depends(db_session), user:User=Depends(current_user)):
+    if not user.mfa_secret:
+        user.mfa_secret=_new_totp_secret(); db.commit()
+    uri=_totp_uri(user.mfa_secret, user.username)
+    return templates.TemplateResponse("mfa.html",{"request":request,"company":COMPANY_NAME,"user":user,"mode":"setup","secret":user.mfa_secret,"uri":uri})
+
+@app.post("/mfa/setup")
+def mfa_setup_verify(request: Request, code: str=Form(...), db: Session=Depends(db_session), user:User=Depends(current_user)):
+    if not user.mfa_secret: raise HTTPException(400,"MFA 尚未初始化")
+    if not _verify_totp(user.mfa_secret, code.strip(), valid_window=1):
+        return RedirectResponse("/mfa/setup?error=1",303)
+    user.mfa_enabled=True; db.commit(); audit(db,user,"啟用","MFA","TOTP 啟用")
+    return _issue_session(user)
+
+@app.post("/account/mfa/reset")
+def mfa_reset(db:Session=Depends(db_session),user:User=Depends(current_user)):
+    user.mfa_enabled=False; user.mfa_secret=""; db.commit(); audit(db,user,"重設","MFA","使用者自行重設")
+    return RedirectResponse("/logout",303)
 
 @app.get("/logout")
 def logout():
-    r=RedirectResponse("/login",303); r.delete_cookie("diamond_session"); return r
+    r=RedirectResponse("/login",303)
+    for name in ("diamond_session","diamond_preauth","csrf_token"): r.delete_cookie(name)
+    return r
 
 
 def _parse_month(month: Optional[str]):
@@ -431,7 +660,7 @@ def _employee_month_rate(db: Session, e: Employee, month_start: date):
     amt=0
     if member_ids:
         amt=db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
-            Sale.employee_id.in_(member_ids), Sale.sale_date>=month_start, Sale.sale_date<=month_end
+            Sale.employee_id.in_(member_ids), Sale.sale_date>=month_start, Sale.sale_date<=month_end, Sale.status=="已認列"
         )) or 0
     target=_employee_target(db,e)
     return float(amt), _pct(float(amt), float(target))
@@ -463,7 +692,7 @@ def _company_revenue_between(db: Session, start: date, end: date):
     if not ids:
         return 0.0
     return float(db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
-        Sale.employee_id.in_(ids), Sale.sale_date>=start, Sale.sale_date<=end
+        Sale.employee_id.in_(ids), Sale.sale_date>=start, Sale.sale_date<=end, Sale.status=="已認列"
     )) or 0)
 
 def _growth_pct(current, previous):
@@ -510,7 +739,7 @@ def _executive_visual_context(db: Session, month_start: date, emps, user: User):
         use_ids=ids if employee_ids is None else employee_ids
         if not use_ids: return 0.0
         return float(db.scalar(select(func.coalesce(func.sum(Sale.amount),0)).where(
-            Sale.employee_id.in_(use_ids), Sale.sale_date>=start, Sale.sale_date<=end
+            Sale.employee_id.in_(use_ids), Sale.sale_date>=start, Sale.sale_date<=end, Sale.status=="已認列"
         )) or 0)
 
     # Rolling 12 months: actual vs dynamic monthly target.
@@ -545,7 +774,7 @@ def _executive_visual_context(db: Session, month_start: date, emps, user: User):
     # Product revenue mix for selected month.
     product_rows=db.execute(select(Product.name, func.coalesce(func.sum(Sale.amount),0)).join(Sale, Sale.product_id==Product.id).where(
         Sale.employee_id.in_(ids) if ids else Sale.employee_id==-1,
-        Sale.sale_date>=month_start, Sale.sale_date<=_month_end(month_start)
+        Sale.sale_date>=month_start, Sale.sale_date<=_month_end(month_start), Sale.status=="已認列"
     ).group_by(Product.id,Product.name).order_by(func.sum(Sale.amount).desc())).all()
     products=[{"label":name,"actual":float(amount or 0)} for name,amount in product_rows]
     return {"monthly":monthly,"yoy_monthly":yoy_monthly,"quarters":quarters,"regions":regions,"products":products}
@@ -554,7 +783,7 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
     month_start=_parse_month(month)
     month_end=_month_end(month_start)
     month_key=month_start.strftime("%Y-%m")
-    sales_query=select(Sale).where(Sale.sale_date>=month_start, Sale.sale_date<=month_end)
+    sales_query=select(Sale).where(Sale.sale_date>=month_start, Sale.sale_date<=month_end, Sale.status=="已認列")
     if user.role in ("manager","sales"):
         sales_query=sales_query.join(Employee).where(Employee.region==user.region)
     sales=list(db.scalars(sales_query))
@@ -679,17 +908,20 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, month: Optional[str]=None, db: Session=Depends(db_session), user: User=Depends(current_user)):
+    if user.role=="sales": return RedirectResponse("/sales-portal",303)
     ctx=kpi_context(db,user,month)
     return templates.TemplateResponse("dashboard.html", {"request":request,"user":user,"company":COMPANY_NAME,**ctx})
 
 
 @app.get("/api/dashboard")
 def api_dashboard(month: Optional[str]=None, db: Session=Depends(db_session), user: User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
     return kpi_context(db,user,month)
 
 
 @app.get("/export/kpi.csv")
 def export_kpi(month: Optional[str]=None, db:Session=Depends(db_session), user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
     ctx=kpi_context(db,user,month)
     out=io.StringIO(); w=csv.writer(out)
     w.writerow(["月份","員工","職級","區域","業績目標","實際業績","業績達成率","CRM完整度","燈號","連續達標月","連續未達標月","管理建議"])
@@ -751,7 +983,9 @@ def kpi_action_reject(aid:int, db:Session=Depends(db_session), user:User=Depends
 
 @app.get("/employees", response_class=HTMLResponse)
 def employees_page(request:Request, status:str="active", db:Session=Depends(db_session), user:User=Depends(current_user)):
+    if user.role=="sales": return RedirectResponse("/sales-portal",303)
     q=select(Employee).where(Employee.is_deleted==False)
+    if user.role=="manager": q=q.where(Employee.region==user.region)
     if status == "inactive":
         q=q.where(Employee.active==False)
     elif status != "all":
@@ -812,12 +1046,19 @@ def employee_delete(eid:int,db:Session=Depends(db_session),user:User=Depends(cur
 
 @app.get("/sales", response_class=HTMLResponse)
 def sales_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    rows=list(db.scalars(select(Sale).order_by(Sale.sale_date.desc(),Sale.id.desc()).limit(300)))
-    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False))); products=list(db.scalars(select(Product).where(Product.active==True))); clinics=list(db.scalars(select(Clinic)))
+    if user.role=="sales": return RedirectResponse("/sales-portal",303)
+    ids=_visible_employee_ids(db,user)
+    rows=list(db.scalars(select(Sale).where(Sale.employee_id.in_(ids)).order_by(Sale.sale_date.desc(),Sale.id.desc()).limit(300))) if ids else []
+    emps=list(db.scalars(select(Employee).where(Employee.id.in_(ids),Employee.active==True, Employee.is_deleted==False))) if ids else []
+    products=list(db.scalars(select(Product).where(Product.active==True)))
+    clinics=list(db.scalars(select(Clinic).where(Clinic.region==user.region))) if user.role=="manager" else list(db.scalars(select(Clinic)))
     return templates.TemplateResponse("sales.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps,"products":products,"clinics":clinics})
 
 @app.post("/sales")
 def sale_add(sale_date:date=Form(...),employee_id:int=Form(...),product_id:int=Form(...),clinic_id:int=Form(...),quantity:float=Form(...),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
+    emp=db.get(Employee,employee_id); clinic=db.get(Clinic,clinic_id)
+    if not emp or not _can_access_employee(user,emp) or not clinic or not _can_access_clinic(db,user,clinic): raise HTTPException(403,"資料範圍不足")
     p=db.get(Product,product_id)
     if not p: raise HTTPException(400,"產品不存在")
     amount=float(quantity) * float(p.unit_price or 0)
@@ -834,9 +1075,13 @@ def sale_edit_page(sid:int, request:Request, db:Session=Depends(db_session), use
     sale=db.get(Sale,sid)
     if not sale:
         raise HTTPException(404,"找不到業績資料")
-    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False).order_by(Employee.region,Employee.name)))
+    if not _can_access_employee(user,sale.employee): raise HTTPException(403,"資料範圍不足")
+    ids=_visible_employee_ids(db,user)
+    emps=list(db.scalars(select(Employee).where(Employee.id.in_(ids),Employee.active==True, Employee.is_deleted==False).order_by(Employee.region,Employee.name))) if ids else []
     products=list(db.scalars(select(Product).where(Product.active==True).order_by(Product.name)))
-    clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name)))
+    cstmt=select(Clinic).order_by(Clinic.region,Clinic.name)
+    if user.role=="manager": cstmt=cstmt.where(Clinic.region==user.region)
+    clinics=list(db.scalars(cstmt))
     return templates.TemplateResponse("sales_edit.html",{
         "request":request,"user":user,"company":COMPANY_NAME,"sale":sale,
         "employees":emps,"products":products,"clinics":clinics
@@ -848,7 +1093,11 @@ def sale_edit(sid:int,sale_date:date=Form(...),employee_id:int=Form(...),product
     sale=db.get(Sale,sid)
     if not sale:
         raise HTTPException(404,"找不到業績資料")
+    if not _can_access_employee(user,sale.employee): raise HTTPException(403,"資料範圍不足")
+    target_emp=db.get(Employee,employee_id); target_clinic=db.get(Clinic,clinic_id)
+    if not target_emp or not _can_access_employee(user,target_emp) or not target_clinic or not _can_access_clinic(db,user,target_clinic): raise HTTPException(403,"資料範圍不足")
     product=db.get(Product,product_id)
+    if not product or not product.active: raise HTTPException(400,"產品不存在或已停用")
     sale.sale_date=sale_date
     sale.employee_id=employee_id
     sale.product_id=product_id
@@ -870,11 +1119,14 @@ def sale_edit(sid:int,sale_date:date=Form(...),employee_id:int=Form(...),product
 def sale_delete(sid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive","manager")
     s=db.get(Sale,sid)
-    if s: db.delete(s); db.commit(); audit(db,user,"刪除","業績",str(sid))
+    if s:
+        if not _can_access_employee(user,s.employee): raise HTTPException(403,"資料範圍不足")
+        s.status="已作廢"; db.commit(); audit(db,user,"作廢","業績",str(sid))
     return RedirectResponse("/sales",303)
 
 @app.get("/products", response_class=HTMLResponse)
 def products_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin","executive","manager")
     rows=list(db.scalars(select(Product).order_by(Product.name)))
     return templates.TemplateResponse("products.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows})
 
@@ -991,7 +1243,11 @@ def _clinic_analytics(db: Session, clinic: Clinic, ref: Optional[date]=None):
 
 @app.get("/clinics",response_class=HTMLResponse)
 def clinics_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    clinics=list(db.scalars(select(Clinic).order_by(Clinic.region,Clinic.name))); emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False)))
+    if user.role=="sales": return RedirectResponse("/sales-portal",303)
+    stmt=select(Clinic).order_by(Clinic.region,Clinic.name)
+    if user.role=="sales": stmt=stmt.where(Clinic.owner_employee_id==user.employee_id)
+    elif user.role=="manager": stmt=stmt.where(Clinic.region==user.region)
+    clinics=list(db.scalars(stmt)); ids=_visible_employee_ids(db,user); emps=list(db.scalars(select(Employee).where(Employee.id.in_(ids),Employee.active==True, Employee.is_deleted==False))) if ids else []
     ref=date.today(); rows=[]
     for c in clinics:
         a=_clinic_analytics(db,c,ref)
@@ -1002,6 +1258,7 @@ def clinics_page(request:Request,db:Session=Depends(db_session),user:User=Depend
 def clinic_detail(cid:int,request:Request,year:Optional[int]=None,month:Optional[int]=None,db:Session=Depends(db_session),user:User=Depends(current_user)):
     clinic=db.get(Clinic,cid)
     if not clinic: raise HTTPException(404,"找不到診所")
+    if not _can_access_clinic(db,user,clinic): raise HTTPException(403,"資料範圍不足")
     today=date.today(); y=year or today.year; m=month or today.month
     if m<1 or m>12: raise HTTPException(400,"月份錯誤")
     ref=date(y,m,min(today.day,calendar.monthrange(y,m)[1]))
@@ -1009,11 +1266,15 @@ def clinic_detail(cid:int,request:Request,year:Optional[int]=None,month:Optional
     return templates.TemplateResponse("clinic_detail.html",{"request":request,"user":user,"company":COMPANY_NAME,"clinic":clinic,"ref":ref,**a})
 
 @app.post("/clinics")
-def clinic_add(code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+def clinic_add(code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),customer_class:str=Form("C"),db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive","manager")
     if db.scalar(select(Clinic).where(Clinic.code==code.strip())):
         raise HTTPException(400,"客戶代碼已存在")
-    db.add(Clinic(code=code.strip(),name=name.strip(),region=region,city=city.strip(),contact_person=contact_person.strip(),phone=phone.strip(),address=address.strip(),owner_employee_id=owner_employee_id,status=status)); db.commit(); audit(db,user,"新增","診所",name)
+    if customer_class.upper() not in CLASS_LABELS: raise HTTPException(400,"客戶分類錯誤")
+    if user.role=="manager" and region!=user.region: raise HTTPException(403,"區域經理只能建立本區客戶")
+    emp=db.get(Employee,owner_employee_id)
+    if not emp or not _can_access_employee(user,emp): raise HTTPException(403,"不能指派到此業務")
+    db.add(Clinic(code=code.strip(),name=name.strip(),region=region,city=city.strip(),contact_person=contact_person.strip(),phone=phone.strip(),address=address.strip(),owner_employee_id=owner_employee_id,status=status,customer_class=customer_class.upper())); db.commit(); audit(db,user,"新增","診所",name)
     return RedirectResponse("/clinics",303)
 
 @app.get("/clinics/{cid}/edit",response_class=HTMLResponse)
@@ -1021,41 +1282,196 @@ def clinic_edit_page(cid:int,request:Request,db:Session=Depends(db_session),user
     authorize(user,"admin","executive","manager")
     clinic=db.get(Clinic,cid)
     if not clinic: raise HTTPException(404,"找不到診所")
-    emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False).order_by(Employee.region,Employee.name)))
+    if not _can_access_clinic(db,user,clinic): raise HTTPException(403,"資料範圍不足")
+    ids=_visible_employee_ids(db,user)
+    emps=list(db.scalars(select(Employee).where(Employee.id.in_(ids),Employee.active==True, Employee.is_deleted==False).order_by(Employee.region,Employee.name))) if ids else []
     return templates.TemplateResponse("clinic_edit.html",{"request":request,"user":user,"company":COMPANY_NAME,"clinic":clinic,"employees":emps})
 
 @app.post("/clinics/{cid}/edit")
-def clinic_edit(cid:int,code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+def clinic_edit(cid:int,code:str=Form(...),name:str=Form(...),region:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),owner_employee_id:int=Form(...),status:str=Form(...),customer_class:str=Form("C"),db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive","manager")
     clinic=db.get(Clinic,cid)
     if not clinic: raise HTTPException(404,"找不到診所")
+    if not _can_access_clinic(db,user,clinic): raise HTTPException(403,"資料範圍不足")
     duplicate=db.scalar(select(Clinic).where(Clinic.code==code.strip(), Clinic.id!=cid))
     if duplicate: raise HTTPException(400,"客戶代碼已被其他診所使用")
     before=f"{clinic.code} {clinic.name}"
     clinic.code=code.strip(); clinic.name=name.strip(); clinic.region=region; clinic.city=city.strip()
     clinic.contact_person=contact_person.strip(); clinic.phone=phone.strip(); clinic.address=address.strip()
-    clinic.owner_employee_id=owner_employee_id; clinic.status=status
+    if customer_class.upper() not in CLASS_LABELS: raise HTTPException(400,"客戶分類錯誤")
+    emp=db.get(Employee,owner_employee_id)
+    if not emp or not _can_access_employee(user,emp): raise HTTPException(403,"不能指派到此業務")
+    clinic.owner_employee_id=owner_employee_id; clinic.status=status; clinic.customer_class=customer_class.upper()
     db.commit(); audit(db,user,"修改","診所",f"{before} → {clinic.code} {clinic.name}")
     return RedirectResponse("/clinics",303)
 
 @app.get("/activities",response_class=HTMLResponse)
 def activities_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    rows=list(db.scalars(select(Activity).order_by(Activity.activity_date.desc(),Activity.id.desc()).limit(300))); emps=list(db.scalars(select(Employee).where(Employee.active==True, Employee.is_deleted==False))); clinics=list(db.scalars(select(Clinic)))
+    ids=_visible_employee_ids(db,user)
+    rows=list(db.scalars(select(Activity).where(Activity.employee_id.in_(ids)).order_by(Activity.activity_date.desc(),Activity.id.desc()).limit(300))) if ids else []
+    emps=list(db.scalars(select(Employee).where(Employee.id.in_(ids),Employee.active==True, Employee.is_deleted==False))) if ids else []
+    cstmt=select(Clinic)
+    if user.role=="sales": cstmt=cstmt.where(Clinic.owner_employee_id==user.employee_id)
+    elif user.role=="manager": cstmt=cstmt.where(Clinic.region==user.region)
+    clinics=list(db.scalars(cstmt))
     return templates.TemplateResponse("activities.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":emps,"clinics":clinics})
 
 @app.post("/activities")
 def activity_add(activity_date:date=Form(...),employee_id:int=Form(...),clinic_id:int=Form(...),stage:str=Form(...),outcome:str=Form(""),next_action_date:Optional[date]=Form(None),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    emp=db.get(Employee,employee_id); clinic=db.get(Clinic,clinic_id)
+    if not emp or not _can_access_employee(user,emp) or not clinic or not _can_access_clinic(db,user,clinic): raise HTTPException(403,"資料範圍不足")
     db.add(Activity(activity_date=activity_date,employee_id=employee_id,clinic_id=clinic_id,stage=stage,outcome=outcome,next_action_date=next_action_date)); db.commit(); audit(db,user,"新增","CRM活動",stage)
     return RedirectResponse("/activities",303)
 
+
+# ---------------- v28-v31 Sales CRM Dashboard ----------------
+CLASS_LABELS={"A":"A｜每週","B":"B｜每月","C":"C｜每季","D":"D｜每半年"}
+
+def _add_months(d: date, months: int) -> date:
+    y=d.year+(d.month-1+months)//12; m=(d.month-1+months)%12+1
+    return date(y,m,min(d.day,calendar.monthrange(y,m)[1]))
+
+def _next_visit_date(last: Optional[date], customer_class: str, today: date) -> date:
+    base=last or today
+    c=(customer_class or "C").upper()
+    if c=="A": return base+timedelta(days=7)
+    if c=="B": return _add_months(base,1)
+    if c=="D": return _add_months(base,6)
+    return _add_months(base,3)
+
+def _last_visit(db: Session, employee_id: int, clinic_id: int):
+    return db.scalar(select(func.max(Activity.activity_date)).where(Activity.employee_id==employee_id,Activity.clinic_id==clinic_id,Activity.stage=="拜訪"))
+
+def _visit_row(db: Session, employee_id: int, clinic: Clinic, today: date):
+    last=_last_visit(db,employee_id,clinic.id)
+    due=_next_visit_date(last,clinic.customer_class,today)
+    recommended=today if due<today else due
+    delta=(due-today).days
+    if delta<0: light="red"; label=f"逾期 {abs(delta)} 天"
+    elif delta<=3: light="yellow"; label=f"{delta} 天內到期"
+    else: light="green"; label="正常"
+    return {"clinic":clinic,"last_visit":last,"due":due,"recommended":recommended,"light":light,"light_label":label}
+
+def _portal_employee(db:Session,user:User):
+    if not user.employee_id: return None
+    e=db.get(Employee,user.employee_id)
+    if not e or e.is_deleted or not e.active: return None
+    return e
+
+@app.get("/sales-portal",response_class=HTMLResponse)
+def sales_portal(request:Request,month:Optional[str]=None,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user)
+    ref=_parse_month(month); today=date.today(); month_end=_month_end(ref)
+    clinics=[]; perf=[]; clinic_rows=[]
+    if employee:
+        clinics=list(db.scalars(select(Clinic).where(Clinic.owner_employee_id==employee.id).order_by(Clinic.customer_class,Clinic.name)))
+        perf=list(db.scalars(select(DailyPerformance).where(DailyPerformance.employee_id==employee.id,DailyPerformance.entry_date>=ref,DailyPerformance.entry_date<=month_end).order_by(DailyPerformance.entry_date.desc(),DailyPerformance.id.desc())))
+        clinic_rows=[_visit_row(db,employee.id,c,today) for c in clinics]
+        clinic_rows.sort(key=lambda r:(r["recommended"],r["clinic"].customer_class,r["clinic"].name))
+    products=list(db.scalars(select(Product).where(Product.active==True).order_by(Product.name)))
+    def sums(rows):
+        return {"sales":sum(x.sales_amount for x in rows),"shipment":sum(x.shipment_amount for x in rows),"collection":sum(x.collection_amount for x in rows)}
+    today_rows=[x for x in perf if x.entry_date==today]
+    weeks=[]; cal=calendar.Calendar(firstweekday=0)
+    by_day={}
+    for r in clinic_rows:
+        d=r["recommended"]
+        if d.year==ref.year and d.month==ref.month: by_day.setdefault(d.day,[]).append(r)
+    for week in cal.monthdayscalendar(ref.year,ref.month):
+        weeks.append([{"day":day,"visits":by_day.get(day,[])} for day in week])
+    prev=_shift_month(ref,-1).strftime("%Y-%m"); nxt=_shift_month(ref,1).strftime("%Y-%m")
+    return templates.TemplateResponse("sales_portal.html",{"request":request,"user":user,"company":COMPANY_NAME,"employee":employee,"today":today,"ref":ref,"clinics":clinics,"products":products,"perf":perf,"totals":sums(perf),"today_totals":sums(today_rows),"clinic_rows":clinic_rows,"class_labels":CLASS_LABELS,"weeks":weeks,"prev_month":prev,"next_month":nxt})
+
+@app.post("/sales-portal/performance")
+def portal_performance(entry_date:date=Form(...),clinic_id:int=Form(...),product_id:int=Form(...),quantity:float=Form(0),sales_amount:float=Form(0),shipment_amount:float=Form(0),collection_amount:float=Form(0),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user)
+    if not employee: raise HTTPException(403,"帳號尚未綁定有效業務")
+    clinic=db.get(Clinic,clinic_id); product=db.get(Product,product_id)
+    if not clinic or clinic.owner_employee_id!=employee.id: raise HTTPException(403,"只能輸入自己的客戶")
+    if not product or not product.active: raise HTTPException(400,"產品不存在或已停用")
+    vals=[quantity,sales_amount,shipment_amount,collection_amount]
+    if any(float(v)<0 for v in vals): raise HTTPException(400,"數量與金額不得為負數")
+    db.add(DailyPerformance(entry_date=entry_date,employee_id=employee.id,clinic_id=clinic.id,product_id=product.id,quantity=quantity,sales_amount=sales_amount,shipment_amount=shipment_amount,collection_amount=collection_amount,note=note.strip()))
+    db.commit(); audit(db,user,"新增","每日業績",f"{entry_date} {clinic.name} 銷售={sales_amount:.0f} 出貨={shipment_amount:.0f} 收款={collection_amount:.0f}")
+    return RedirectResponse(f"/sales-portal?month={entry_date.strftime('%Y-%m')}",303)
+
+@app.post("/sales-portal/clinics")
+def portal_clinic_add(code:str=Form(...),name:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),customer_class:str=Form("C"),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user)
+    if not employee: raise HTTPException(403,"帳號尚未綁定有效業務")
+    customer_class=customer_class.upper()
+    if customer_class not in CLASS_LABELS: raise HTTPException(400,"客戶分類錯誤")
+    if db.scalar(select(Clinic).where(Clinic.code==code.strip())): raise HTTPException(400,"客戶代碼已存在")
+    c=Clinic(code=code.strip(),name=name.strip(),region=employee.region,city=city.strip(),contact_person=contact_person.strip(),phone=phone.strip(),address=address.strip(),owner_employee_id=employee.id,status="有效客戶",customer_class=customer_class)
+    db.add(c); db.commit(); audit(db,user,"新增","我的客戶",f"{c.code} {c.name} {customer_class}類")
+    return RedirectResponse("/sales-portal",303)
+
+@app.post("/sales-portal/clinics/{cid}/class")
+def portal_clinic_class(cid:int,customer_class:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user); c=db.get(Clinic,cid)
+    if not employee or not c or c.owner_employee_id!=employee.id: raise HTTPException(403,"只能管理自己的客戶")
+    customer_class=customer_class.upper()
+    if customer_class not in CLASS_LABELS: raise HTTPException(400,"分類錯誤")
+    before=c.customer_class; c.customer_class=customer_class; db.commit(); audit(db,user,"修改","客戶分類",f"{c.name} {before}→{customer_class}")
+    return RedirectResponse("/sales-portal",303)
+
+@app.post("/sales-portal/clinics/{cid}/visit")
+def portal_visit(cid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user); c=db.get(Clinic,cid)
+    if not employee or not c or c.owner_employee_id!=employee.id: raise HTTPException(403,"只能管理自己的客戶")
+    today=date.today(); next_date=_next_visit_date(today,c.customer_class,today)
+    db.add(Activity(activity_date=today,employee_id=employee.id,clinic_id=c.id,stage="拜訪",outcome="完成例行拜訪",next_action_date=next_date)); db.commit(); audit(db,user,"完成","拜訪",f"{c.name}，下次 {next_date}")
+    return RedirectResponse("/sales-portal",303)
+
+@app.get("/security",response_class=HTMLResponse)
+def security_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    recent=list(db.scalars(select(AuditLog).where(AuditLog.username==user.username).order_by(AuditLog.created_at.desc()).limit(20)))
+    return templates.TemplateResponse("security.html",{"request":request,"user":user,"company":COMPANY_NAME,"recent":recent,"force_mfa":FORCE_PRIVILEGED_MFA,"app_env":APP_ENV})
+
 @app.get("/users",response_class=HTMLResponse)
 def users_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); rows=list(db.scalars(select(User).order_by(User.username)))
-    return templates.TemplateResponse("users.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows})
+    authorize(user,"admin"); rows=list(db.scalars(select(User).order_by(User.username))); employees=list(db.scalars(select(Employee).where(Employee.is_deleted==False).order_by(Employee.name)))
+    return templates.TemplateResponse("users.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":employees})
 
 @app.post("/users")
-def user_add(username:str=Form(...),full_name:str=Form(...),password:str=Form(...),role:str=Form(...),region:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); db.add(User(username=username,full_name=full_name,password_hash=pwd.hash(password),role=role,region=region)); db.commit(); audit(db,user,"新增","使用者",username)
+def user_add(username:str=Form(...),full_name:str=Form(...),password:str=Form(...),role:str=Form(...),region:str=Form(...),employee_id:Optional[int]=Form(None),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin")
+    if role not in {"sales","manager","executive","admin"}: raise HTTPException(400,"角色錯誤")
+    if region not in {"北區","中區","南區","全區"}: raise HTTPException(400,"區域錯誤")
+    if len(password)<10: raise HTTPException(400,"密碼至少 10 碼")
+    if db.scalar(select(User).where(User.username==username.strip())): raise HTTPException(400,"帳號已存在")
+    db.add(User(username=username.strip(),full_name=full_name,password_hash=pwd.hash(password),role=role,region=region,employee_id=employee_id,password_changed_at=datetime.utcnow())); db.commit(); audit(db,user,"新增","使用者",username)
+    return RedirectResponse("/users",303)
+
+@app.post("/users/{uid}/employee")
+def user_map_employee(uid:int,employee_id:Optional[int]=Form(None),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); target=db.get(User,uid)
+    if not target: raise HTTPException(404,"帳號不存在")
+    target.employee_id=employee_id; db.commit(); audit(db,user,"修改","帳號綁定",f"{target.username} → employee_id={employee_id}")
+    return RedirectResponse("/users",303)
+
+
+@app.post("/users/{uid}/toggle")
+def user_toggle(uid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); target=db.get(User,uid)
+    if not target: raise HTTPException(404)
+    if target.id==user.id and target.active: raise HTTPException(400,"不能停用自己的管理員帳號")
+    target.active=not target.active; db.commit(); audit(db,user,"啟用" if target.active else "停用","使用者",target.username)
+    return RedirectResponse("/users",303)
+
+@app.post("/users/{uid}/mfa-reset")
+def admin_mfa_reset(uid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); target=db.get(User,uid)
+    if not target: raise HTTPException(404)
+    target.mfa_enabled=False; target.mfa_secret=""; db.commit(); audit(db,user,"重設","MFA",target.username)
+    return RedirectResponse("/users",303)
+
+@app.post("/users/{uid}/password")
+def admin_password_reset(uid:int,password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); target=db.get(User,uid)
+    if not target: raise HTTPException(404)
+    if len(password)<10: raise HTTPException(400,"密碼至少 10 碼")
+    target.password_hash=pwd.hash(password); target.password_changed_at=datetime.utcnow(); target.failed_login_count=0; target.locked_until=None; db.commit(); audit(db,user,"重設","密碼",target.username)
     return RedirectResponse("/users",303)
 
 @app.get("/audit",response_class=HTMLResponse)
@@ -1066,7 +1482,9 @@ def audit_page(request:Request,db:Session=Depends(db_session),user:User=Depends(
 @app.get("/export/sales.csv")
 def export_sales(db:Session=Depends(db_session),user:User=Depends(current_user)):
     out=io.StringIO(); w=csv.writer(out); w.writerow(["日期","員工編號","員工","產品代碼","產品","診所代碼","診所","數量","金額","毛利","狀態","備註"])
-    for s in db.scalars(select(Sale).order_by(Sale.sale_date)):
+    ids=_visible_employee_ids(db,user)
+    stmt=select(Sale).where(Sale.employee_id.in_(ids)).order_by(Sale.sale_date) if ids else select(Sale).where(Sale.id==-1)
+    for s in db.scalars(stmt):
         w.writerow([s.sale_date,s.employee.employee_no,s.employee.name,s.product.code,s.product.name,s.clinic.code,s.clinic.name,s.quantity,s.amount,s.gross_profit,s.status,s.note])
     data=out.getvalue().encode("utf-8-sig")
     return StreamingResponse(io.BytesIO(data),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_sales.csv"})
@@ -1111,7 +1529,7 @@ def _sales_validate(rows, db):
 def _clinics_validate(rows, db):
     checked=[]; seen=set()
     for idx,row in enumerate(rows,start=2):
-        code=_norm(row.get("客戶代碼")); name=_norm(row.get("診所名稱")); region=_norm(row.get("區域")); city=_norm(row.get("城市")); contact_person=_norm(row.get("聯絡人")); phone=_norm(row.get("電話")); address=_norm(row.get("地址")); eno=_norm(row.get("負責業務員工編號")); status=_norm(row.get("狀態")) or "有效客戶"
+        code=_norm(row.get("客戶代碼")); name=_norm(row.get("診所名稱")); region=_norm(row.get("區域")); city=_norm(row.get("城市")); contact_person=_norm(row.get("聯絡人")); phone=_norm(row.get("電話")); address=_norm(row.get("地址")); eno=_norm(row.get("負責業務員工編號")); status=_norm(row.get("狀態")) or "有效客戶"; customer_class=(_norm(row.get("客戶分類")) or "C").upper()
         errors=[]
         if not code: errors.append("缺少客戶代碼")
         if not name: errors.append("缺少診所名稱")
@@ -1121,9 +1539,10 @@ def _clinics_validate(rows, db):
         if eno and not emp: errors.append("負責業務員工編號不存在")
         if not eno: errors.append("缺少負責業務員工編號")
         if status not in ["有效客戶","潛在客戶","暫停交易"]: errors.append("狀態不正確")
+        if customer_class not in {"A","B","C","D"}: errors.append("客戶分類需為 A/B/C/D")
         if code and (db.scalar(select(Clinic).where(Clinic.code==code)) or code in seen): errors.append("客戶代碼重複")
         seen.add(code)
-        checked.append({"line":idx,"data":{"客戶代碼":code,"診所名稱":name,"區域":region,"城市":city,"聯絡人":contact_person,"電話":phone,"地址":address,"負責業務員工編號":eno,"狀態":status},"errors":errors})
+        checked.append({"line":idx,"data":{"客戶代碼":code,"診所名稱":name,"區域":region,"城市":city,"聯絡人":contact_person,"電話":phone,"地址":address,"負責業務員工編號":eno,"狀態":status,"客戶分類":customer_class},"errors":errors})
     return checked
 
 @app.get("/templates/sales-import.csv")
@@ -1133,7 +1552,7 @@ def sales_template(user:User=Depends(current_user)):
 
 @app.get("/templates/clinics-import.csv")
 def clinics_template(user:User=Depends(current_user)):
-    text="客戶代碼,診所名稱,區域,城市,聯絡人,電話,地址,負責業務員工編號,狀態\nC001,範例醫美診所,北區,台北市,王小姐,02-1234-5678,台北市信義區範例路1號,S001,有效客戶\n"
+    text="客戶代碼,診所名稱,區域,城市,聯絡人,電話,地址,負責業務員工編號,狀態,客戶分類\nC001,範例醫美診所,北區,台北市,王小姐,02-1234-5678,台北市信義區範例路1號,S001,有效客戶,A\n"
     return Response(content=text.encode("utf-8-sig"),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_clinics_import_template.csv"})
 
 @app.post("/import/sales/preview",response_class=HTMLResponse)
@@ -1154,6 +1573,7 @@ def import_sales_confirm(token:str=Form(...),db:Session=Depends(db_session),user
     for row in payload["rows"]:
         emp=db.scalar(select(Employee).where(Employee.employee_no==row["員工編號"])); prod=db.scalar(select(Product).where(Product.code==row["產品代碼"])); clinic=db.scalar(select(Clinic).where(Clinic.code==row["診所代碼"]))
         if not(emp and prod and clinic): continue
+        if not _can_access_employee(user,emp) or not _can_access_clinic(db,user,clinic): continue
         qty=float(row["數量"]); amount=qty*float(prod.unit_price or 0); db.add(Sale(sale_date=date.fromisoformat(row["日期"]),employee_id=emp.id,product_id=prod.id,clinic_id=clinic.id,quantity=qty,amount=amount,gross_profit=amount*prod.gross_margin,note=row.get("備註",""))); count+=1
     db.commit(); audit(db,user,"匯入","業績",f"{count} 筆（智慧匯入）")
     return RedirectResponse("/sales",303)
@@ -1176,8 +1596,9 @@ def import_clinics_confirm(token:str=Form(...),db:Session=Depends(db_session),us
     for row in payload["rows"]:
         if db.scalar(select(Clinic).where(Clinic.code==row["客戶代碼"])): continue
         emp=db.scalar(select(Employee).where(Employee.employee_no==row["負責業務員工編號"]))
-        if not emp: continue
-        db.add(Clinic(code=row["客戶代碼"],name=row["診所名稱"],region=row["區域"],city=row["城市"],contact_person=row.get("聯絡人","") or "",phone=row.get("電話","") or "",address=row.get("地址","") or "",owner_employee_id=emp.id,status=row["狀態"])); count+=1
+        if not emp or not _can_access_employee(user,emp): continue
+        if user.role=="manager" and row["區域"]!=user.region: continue
+        db.add(Clinic(code=row["客戶代碼"],name=row["診所名稱"],region=row["區域"],city=row["城市"],contact_person=row.get("聯絡人","") or "",phone=row.get("電話","") or "",address=row.get("地址","") or "",owner_employee_id=emp.id,status=row["狀態"],customer_class=row.get("客戶分類","C") or "C")); count+=1
     db.commit(); audit(db,user,"匯入","診所",f"{count} 筆（智慧匯入）")
     return RedirectResponse("/clinics",303)
 

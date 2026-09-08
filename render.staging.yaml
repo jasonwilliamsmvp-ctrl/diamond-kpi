@@ -1,9 +1,8 @@
 services:
   - type: web
-    name: diamond-kpi
+    name: diamond-kpi-staging
     runtime: python
     region: singapore
-    plan: free
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -13,14 +12,14 @@ services:
         value: "3.13.5"
       - key: DATABASE_URL
         fromDatabase:
-          name: diamond-kpi-db
+          name: diamond-kpi-staging-db
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
       - key: APP_ENV
         value: production
       - key: COMPANY_NAME
-        value: 晶鑽生醫
+        value: 晶鑽生醫 STAGING
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
@@ -37,10 +36,9 @@ services:
         value: "28800"
 
 databases:
-  - name: diamond-kpi-db
+  - name: diamond-kpi-staging-db
     region: singapore
-    plan: free
-    databaseName: diamond_kpi
-    user: diamond_kpi
+    databaseName: diamond_kpi_staging
+    user: diamond_kpi_staging
     postgresMajorVersion: "17"
     ipAllowList: []
