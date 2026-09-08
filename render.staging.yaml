@@ -27,7 +27,7 @@ services:
       - key: SEED_DEMO_DATA
         value: "false"
       - key: FORCE_PRIVILEGED_MFA
-        value: "true"
+        value: "false"
       - key: LOGIN_MAX_FAILURES
         value: "5"
       - key: LOGIN_LOCK_MINUTES

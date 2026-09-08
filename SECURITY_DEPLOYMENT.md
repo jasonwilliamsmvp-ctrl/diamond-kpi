@@ -6,7 +6,7 @@
 - `SECRET_KEY`：64+ 字元隨機字串，禁止放 GitHub
 - `ADMIN_PASSWORD`：強密碼，禁止使用 `Admin123!`
 - `SEED_DEMO_DATA=false`
-- `FORCE_PRIVILEGED_MFA=true`
+- `FORCE_PRIVILEGED_MFA=false`
 - `LOGIN_MAX_FAILURES=5`
 - `LOGIN_LOCK_MINUTES=15`
 - `SESSION_MAX_AGE=28800`
@@ -17,7 +17,7 @@
 1. 先備份 Production PostgreSQL。
 2. 部署 v31 到 staging，確認登入、客戶、業績與 KPI 正常。
 3. 再部署 production。
-4. Admin 第一次登入會被導向 MFA setup。
+4. Admin 第一次登入會直接進入系統；若需要 MFA，可在「帳號安全」自行啟用。
 5. 在 Google Authenticator / Microsoft Authenticator 手動新增帳號，輸入畫面顯示的 secret。
 6. 輸入 6 位碼完成啟用。
 7. 為每一位 Executive / Manager 建立個人帳號，禁止共用 admin。
@@ -46,7 +46,7 @@ repo 內提供：
 - 嘗試以 Sales URL 修改其他 Sales 的 clinic_id / employee_id，應回 403。
 - Manager 嘗試寫入其他區域，應回 403。
 - 5 次錯誤密碼後確認暫鎖。
-- 未完成 MFA 的主管無法進 Dashboard。
+- MFA 為選配；未啟用 MFA 不影響 Dashboard 登入。
 - POST 缺 CSRF token 應回 403。
 - 作廢 Sale 後歷史紀錄仍存在，但 KPI 不再計入。
 - Audit Log 應看到 username / IP / method / path。

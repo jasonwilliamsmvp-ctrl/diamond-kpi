@@ -193,7 +193,7 @@ PRIVILEGED_ROLES = {"admin", "executive", "manager"}
 LOGIN_MAX_FAILURES = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
 LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", "28800"))
-FORCE_PRIVILEGED_MFA = os.getenv("FORCE_PRIVILEGED_MFA", "true").lower() == "true"
+FORCE_PRIVILEGED_MFA = os.getenv("FORCE_PRIVILEGED_MFA", "false").lower() == "true"
 
 def _new_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
