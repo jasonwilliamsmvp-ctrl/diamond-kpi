@@ -547,9 +547,21 @@ def mfa_reset(db:Session=Depends(db_session),user:User=Depends(current_user)):
     return RedirectResponse("/logout",303)
 
 @app.get("/logout")
-def logout():
+def logout(request: Request, db: Session = Depends(db_session)):
+    # Logout must remain usable even when the session is stale/partially invalid.
+    # When a valid user can be resolved, retain an audit trail before clearing cookies.
+    token = request.cookies.get("diamond_session")
+    if token:
+        try:
+            data = signer.loads(token)
+            user = db.get(User, data.get("uid"))
+            if user:
+                _auth_event(db, user.username, "登出", "使用者安全登出")
+        except Exception:
+            pass
     r=RedirectResponse("/login",303)
-    for name in ("diamond_session","diamond_preauth","csrf_token"): r.delete_cookie(name)
+    for name in ("diamond_session","diamond_preauth","csrf_token"):
+        r.delete_cookie(name, path="/")
     return r
 
 

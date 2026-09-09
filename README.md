@@ -103,4 +103,4 @@ Pinned `bcrypt==4.0.1` for compatibility with Passlib 1.7.4 on Render/Python 3.1
 
 v31 合併 v28～v31 路線：業務 Customer Dashboard、資料範圍隔離、CSRF / security headers / login lockout / audit trail，以及 TOTP MFA 與 staging / production 上線流程。
 
-正式部署前請先閱讀 `SECURITY_DEPLOYMENT.md`。v32 起 MFA 改為選配；所有角色可使用帳號＋密碼登入，使用者可自行選擇啟用 TOTP MFA。
+正式部署前請先閱讀 `SECURITY_DEPLOYMENT.md`。v33 起 MFA 改為選配；所有角色可使用帳號＋密碼登入，使用者可自行選擇啟用 TOTP MFA。
