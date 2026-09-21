@@ -1,3 +1,7 @@
+# Diamond KPI v34 — Account & Access Security
+
+本版新增完整「帳號與權限」生命週期、安全密碼流程、Session 強制失效、Admin 二次驗證與角色資料隔離。詳見 `V34_CHANGELOG.md` 與 `SECURITY_DEPLOYMENT.md`。
+
 # Diamond KPI Enterprise — Render Edition
 
 晶鑽生醫多人 KPI 與 CRM 管理平台，可透過 GitHub + Render 部署，不需在 Mac 安裝 Docker。

@@ -1,2 +1,95 @@
-{% extends 'base.html' %}{% block title %}帳號與權限{% endblock %}{% block subtitle %}RBAC、資料範圍、MFA 與帳號生命週期{% endblock %}{% block content %}<section class="panel formpanel"><h2>新增使用者</h2><form method="post" action="/users" class="formgrid"><label>帳號<input name="username" required></label><label>姓名<input name="full_name" required></label><label>初始密碼<input name="password" type="password" minlength="10" required></label><label>角色<select name="role"><option value="sales">業務</option><option value="manager">區域經理</option><option value="executive">高階主管</option><option value="admin">系統管理員</option></select></label><label>資料區域<select name="region"><option>北區</option><option>中區</option><option>南區</option><option>全區</option></select></label><label>對應業務<select name="employee_id"><option value="">不綁定</option>{% for e in employees %}<option value="{{e.id}}">{{e.employee_no}}｜{{e.name}}｜{{e.title}}</option>{% endfor %}</select></label><button type="submit">建立帳號</button></form></section>
-<section class="panel"><div class="table-scroll"><table><thead><tr><th>帳號</th><th>姓名</th><th>角色 / 區域</th><th>對應業務</th><th>MFA</th><th>狀態</th><th>管理</th></tr></thead><tbody>{% for r in rows %}<tr><td><b>{{r.username}}</b><small>{{r.last_login_at.strftime('%Y-%m-%d %H:%M') if r.last_login_at else '尚未登入'}}</small></td><td>{{r.full_name}}</td><td>{{r.role}}<small>{{r.region}}</small></td><td><form method="post" action="/users/{{r.id}}/employee" class="inline-form"><select name="employee_id" onchange="this.form.submit()"><option value="">不綁定</option>{% for e in employees %}<option value="{{e.id}}" {% if r.employee_id==e.id %}selected{% endif %}>{{e.name}}</option>{% endfor %}</select></form></td><td><span class="pill {{'green' if r.mfa_enabled else 'yellow'}}">{{'已啟用' if r.mfa_enabled else '未啟用'}}</span>{% if r.mfa_enabled %}<form method="post" action="/users/{{r.id}}/mfa-reset" class="inline-form" onsubmit="return confirm('確定重設 MFA？')"><button class="smallbtn" type="submit">重設</button></form>{% endif %}</td><td><span class="pill {{'green' if r.active else 'red'}}">{{'啟用' if r.active else '停用'}}</span></td><td><div class="stack-actions"><form method="post" action="/users/{{r.id}}/toggle"><button class="smallbtn" type="submit">{{'停用' if r.active else '啟用'}}</button></form><form method="post" action="/users/{{r.id}}/password"><input name="password" type="password" minlength="10" placeholder="新密碼 ≥10碼" required><button class="smallbtn" type="submit">重設密碼</button></form></div></td></tr>{% endfor %}</tbody></table></div></section>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}帳號與權限{% endblock %}
+{% block subtitle %}完整帳號生命週期、RBAC、資料範圍與登入安全管理{% endblock %}
+{% block content %}
+
+{% if request.query_params.get('created') %}<div class="notice success">帳號已建立。首次登入將強制變更密碼。</div>{% endif %}
+{% if request.query_params.get('updated') %}<div class="notice success">帳號與權限已更新，該帳號舊工作階段已失效。</div>{% endif %}
+{% if request.query_params.get('password_reset') %}<div class="notice success">密碼已重設。使用者下次登入必須先變更密碼。</div>{% endif %}
+
+<section class="kpi-grid security-kpis account-kpis">
+  <div class="kpi-card"><small>帳號總數</small><strong>{{stats.total}}</strong></div>
+  <div class="kpi-card"><small>啟用中</small><strong>{{stats.active}}</strong></div>
+  <div class="kpi-card"><small>目前鎖定</small><strong>{{stats.locked}}</strong></div>
+  <div class="kpi-card"><small>已啟用 MFA</small><strong>{{stats.mfa}}</strong></div>
+</section>
+
+<section class="panel formpanel">
+  <div class="panel-head"><div><h2>建立新登入帳號</h2><p>業務帳號必須綁定員工主檔；產品與 KPI 權限由角色自動決定。</p></div></div>
+  <form method="post" action="/users" class="formgrid account-create-grid">
+    <label>登入帳號<input name="username" pattern="[A-Za-z0-9._-]{3,80}" placeholder="例如 wang.sales" required></label>
+    <label>姓名<input name="full_name" placeholder="例如 王小明" required></label>
+    <label>Email（選填）<input name="email" type="email" placeholder="name@company.com"></label>
+    <label>初始密碼<input name="password" type="password" minlength="{{password_min_length}}" placeholder="至少 {{password_min_length}} 碼，含英文與數字" required></label>
+    <label>角色<select name="role" required><option value="sales">業務</option><option value="manager">區域經理</option><option value="executive">高階主管</option><option value="admin">系統管理員</option></select></label>
+    <label>資料區域<select name="region" required><option>北區</option><option>中區</option><option>南區</option><option>全區</option></select></label>
+    <label>對應員工<select name="employee_id"><option value="">不綁定</option>{% for e in employees %}<option value="{{e.id}}" {% if mapped.get(e.id) %}disabled{% endif %}>{{e.employee_no}}｜{{e.name}}｜{{e.title}}{% if mapped.get(e.id) %}（已綁定）{% endif %}</option>{% endfor %}</select></label>
+    <label>管理員密碼（二次確認）<input name="admin_password" type="password" required autocomplete="current-password"></label>
+    <div class="form-actions"><button type="submit">建立帳號</button></div>
+  </form>
+  <p class="form-help">新帳號第一次登入後會被要求更改初始密碼；Admin 重設密碼後也會套用相同規則。</p>
+</section>
+
+<section class="panel">
+  <div class="panel-head account-toolbar">
+    <div><h2>帳號清單</h2><p>角色或資料區域變更後，系統會立即使該帳號既有登入工作階段失效。</p></div>
+    <form method="get" action="/users" class="inline-filter">
+      <select name="status"><option value="all" {% if status_filter=='all' %}selected{% endif %}>全部狀態</option><option value="active" {% if status_filter=='active' %}selected{% endif %}>啟用中</option><option value="inactive" {% if status_filter=='inactive' %}selected{% endif %}>已停用</option></select>
+      <select name="role"><option value="all" {% if role_filter=='all' %}selected{% endif %}>全部角色</option>{% for key,label in role_labels.items() %}<option value="{{key}}" {% if role_filter==key %}selected{% endif %}>{{label}}</option>{% endfor %}</select>
+      <button class="secondary" type="submit">篩選</button>
+    </form>
+  </div>
+  <div class="table-scroll"><table class="account-table">
+    <thead><tr><th>帳號</th><th>姓名 / Email</th><th>角色 / 區域</th><th>對應員工</th><th>登入安全</th><th>狀態</th><th>管理</th></tr></thead>
+    <tbody>{% for r in rows %}
+      <tr class="{{'muted-row' if not r.active else ''}}">
+        <td><b>{{r.username}}</b><small>建立：{{r.created_at.strftime('%Y-%m-%d') if r.created_at else '—'}}</small><small>建立者：{{r.created_by or 'system'}}</small></td>
+        <td><b>{{r.full_name}}</b><small>{{r.email or '未設定 Email'}}</small></td>
+        <td><span class="role-badge role-{{r.role}}">{{role_labels.get(r.role,r.role)}}</span><small>{{r.region}}</small></td>
+        <td>{% set emp = (employees|selectattr('id','equalto',r.employee_id)|list|first) if r.employee_id else None %}{% if emp %}<b>{{emp.name}}</b><small>{{emp.employee_no}}｜{{emp.title}}</small>{% else %}<span class="muted">未綁定</span>{% endif %}</td>
+        <td>
+          <small>最後登入：{{r.last_login_at.strftime('%Y-%m-%d %H:%M') if r.last_login_at else '尚未登入'}}</small>
+          <small>IP：{{r.last_login_ip or '—'}}</small>
+          <div class="security-pills"><span class="pill {{'green' if r.mfa_enabled else 'yellow'}}">MFA {{'開' if r.mfa_enabled else '關'}}</span>{% if r.must_change_password %}<span class="pill yellow">待改密碼</span>{% endif %}</div>
+          {% if r.locked_until %}<small class="danger-text">鎖定至 {{r.locked_until.strftime('%Y-%m-%d %H:%M')}}</small>{% endif %}
+        </td>
+        <td><span class="pill {{'green' if r.active else 'red'}}">{{'啟用' if r.active else '停用'}}</span></td>
+        <td>
+          <details class="account-actions"><summary>管理帳號</summary>
+            <form method="post" action="/users/{{r.id}}/edit" class="mini-form">
+              <h4>基本資料與權限</h4>
+              <input name="full_name" value="{{r.full_name}}" required placeholder="姓名">
+              <input name="email" value="{{r.email or ''}}" type="email" placeholder="Email">
+              <select name="role">{% for key,label in role_labels.items() %}<option value="{{key}}" {% if r.role==key %}selected{% endif %}>{{label}}</option>{% endfor %}</select>
+              <select name="region">{% for rg in ['北區','中區','南區','全區'] %}<option {% if r.region==rg %}selected{% endif %}>{{rg}}</option>{% endfor %}</select>
+              <select name="employee_id"><option value="">不綁定</option>{% for e in employees %}<option value="{{e.id}}" {% if r.employee_id==e.id %}selected{% elif mapped.get(e.id) and mapped.get(e.id)!=r.id %}disabled{% endif %}>{{e.name}}｜{{e.title}}{% if mapped.get(e.id) and mapped.get(e.id)!=r.id %}（已綁定）{% endif %}</option>{% endfor %}</select>
+              <input name="admin_password" type="password" placeholder="管理員密碼" required>
+              <button class="smallbtn" type="submit">儲存權限</button>
+            </form>
+            <form method="post" action="/users/{{r.id}}/password" class="mini-form">
+              <h4>重設密碼</h4><input name="password" type="password" minlength="{{password_min_length}}" placeholder="新密碼" required><input name="admin_password" type="password" placeholder="管理員密碼" required><button class="smallbtn" type="submit">重設並強制改密碼</button>
+            </form>
+            <div class="danger-zone">
+              {% if r.locked_until %}<form method="post" action="/users/{{r.id}}/unlock"><input name="admin_password" type="password" placeholder="管理員密碼" required><button class="smallbtn" type="submit">解除鎖定</button></form>{% endif %}
+              <form method="post" action="/users/{{r.id}}/force-logout"><input name="admin_password" type="password" placeholder="管理員密碼" required><button class="smallbtn" type="submit">強制登出所有裝置</button></form>
+              {% if r.mfa_enabled %}<form method="post" action="/users/{{r.id}}/mfa-reset" onsubmit="return confirm('確定要清除這個帳號的 MFA 綁定？')"><input name="admin_password" type="password" placeholder="管理員密碼" required><button class="smallbtn" type="submit">清除 MFA</button></form>{% endif %}
+              <form method="post" action="/users/{{r.id}}/toggle" onsubmit="return confirm('確定要{{'停用' if r.active else '啟用'}} {{r.username}}？')"><input name="admin_password" type="password" placeholder="管理員密碼" required><button class="{{'danger' if r.active else 'smallbtn'}}" type="submit">{{'停用帳號' if r.active else '重新啟用'}}</button></form>
+            </div>
+          </details>
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="7">沒有符合條件的帳號。</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="panel">
+  <h2>角色權限矩陣</h2>
+  <div class="table-scroll"><table><thead><tr><th>功能</th><th>業務</th><th>區域經理</th><th>高階主管</th><th>Admin</th></tr></thead><tbody>
+    <tr><td>客戶 / 業績 / 拜訪資料</td><td>僅本人</td><td>僅所屬區域</td><td>全公司</td><td>全公司</td></tr>
+    <tr><td>產品主檔</td><td>唯讀</td><td>唯讀 / 依功能授權</td><td>管理</td><td>管理</td></tr>
+    <tr><td>KPI 與處置審核</td><td>看本人</td><td>看區域</td><td>全公司審核</td><td>全公司審核</td></tr>
+    <tr><td>帳號與權限</td><td>—</td><td>—</td><td>—</td><td>完整管理</td></tr>
+    <tr><td>稽核紀錄</td><td>看個人</td><td>看個人</td><td>全公司</td><td>全公司</td></tr>
+  </tbody></table></div>
+</section>
+{% endblock %}

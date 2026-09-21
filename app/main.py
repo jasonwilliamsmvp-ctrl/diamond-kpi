@@ -13,6 +13,7 @@ import base64
 import hmac
 import struct
 import time
+import re
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse, Response
@@ -61,6 +62,12 @@ class User(Base):
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    email: Mapped[str] = mapped_column(String(150), default="")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    session_version: Mapped[int] = mapped_column(Integer, default=1)
+    last_login_ip: Mapped[str] = mapped_column(String(64), default="")
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -194,6 +201,36 @@ LOGIN_MAX_FAILURES = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
 LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", "28800"))
 FORCE_PRIVILEGED_MFA = os.getenv("FORCE_PRIVILEGED_MFA", "false").lower() == "true"
+PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", "10"))
+ROLE_LABELS = {"sales":"業務","manager":"區域經理","executive":"高階主管","admin":"系統管理員"}
+
+def _password_error(password: str, username: str = "") -> str:
+    value=password or ""
+    if len(value) < PASSWORD_MIN_LENGTH:
+        return f"密碼至少 {PASSWORD_MIN_LENGTH} 碼"
+    if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
+        return "密碼必須同時包含英文字母與數字"
+    low=value.lower()
+    if username and username.lower() in low:
+        return "密碼不可包含登入帳號"
+    if any(x in low for x in ("password","admin123","12345678","qwerty")):
+        return "密碼過於常見，請使用更安全的密碼"
+    return ""
+
+def _reauth(user: User, password: str):
+    if not password or not pwd.verify(password, user.password_hash):
+        raise HTTPException(403, "管理員密碼驗證失敗")
+
+def _normalize_role_region(role: str, region: str):
+    if role not in ROLE_LABELS:
+        raise HTTPException(400,"角色錯誤")
+    if region not in {"北區","中區","南區","全區"}:
+        raise HTTPException(400,"區域錯誤")
+    if role in {"admin","executive"}:
+        region="全區"
+    if role=="manager" and region=="全區":
+        raise HTTPException(400,"區域經理必須指定北區、中區或南區")
+    return role,region
 
 def _new_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
@@ -249,6 +286,10 @@ def current_user(request: Request, db: Session = Depends(db_session)) -> User:
     user = db.get(User, data.get("uid"))
     if not user or not user.active:
         raise HTTPException(401)
+    if int(data.get("sv", 0) or 0) != int(user.session_version or 1):
+        raise HTTPException(401)
+    if user.must_change_password and request.url.path not in {"/security","/account/password","/logout"}:
+        raise HTTPException(427, "password change required")
     mfa_required = user.mfa_enabled or (APP_ENV == "production" and FORCE_PRIVILEGED_MFA and user.role in PRIVILEGED_ROLES)
     if mfa_required and not data.get("mfa_verified"):
         if request.url.path not in {"/mfa", "/mfa/setup", "/logout"}:
@@ -325,6 +366,10 @@ async def security_middleware(request: Request, call_next):
 async def unauthorized(request: Request, exc):
     return RedirectResponse("/login", status_code=303)
 
+@app.exception_handler(427)
+async def password_change_required_handler(request: Request, exc):
+    return RedirectResponse("/security?password_required=1", status_code=303)
+
 @app.exception_handler(428)
 async def mfa_required_handler(request: Request, exc):
     return RedirectResponse("/mfa/setup", status_code=303)
@@ -352,6 +397,12 @@ def startup():
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP NULL"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP NULL"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP NULL"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(150) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER DEFAULT 1"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(64) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by VARCHAR(80) DEFAULT 'system'"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL"))
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(64) DEFAULT ''"))
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS method VARCHAR(12) DEFAULT ''"))
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS path VARCHAR(255) DEFAULT ''"))
@@ -369,7 +420,7 @@ def startup():
             user_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
             if "employee_id" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN employee_id INTEGER NULL"))
-            for col, ddl in [("mfa_secret","TEXT DEFAULT ''"),("mfa_enabled","BOOLEAN DEFAULT 0"),("failed_login_count","INTEGER DEFAULT 0"),("locked_until","DATETIME NULL"),("last_login_at","DATETIME NULL"),("password_changed_at","DATETIME NULL")]:
+            for col, ddl in [("mfa_secret","TEXT DEFAULT ''"),("mfa_enabled","BOOLEAN DEFAULT 0"),("failed_login_count","INTEGER DEFAULT 0"),("locked_until","DATETIME NULL"),("last_login_at","DATETIME NULL"),("password_changed_at","DATETIME NULL"),("email","TEXT DEFAULT ''"),("must_change_password","BOOLEAN DEFAULT 0"),("session_version","INTEGER DEFAULT 1"),("last_login_ip","TEXT DEFAULT ''"),("created_by","TEXT DEFAULT 'system'"),("updated_at","DATETIME NULL")]:
                 if col not in user_cols:
                     conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
             audit_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audit_logs)"))}
@@ -471,6 +522,7 @@ def login_page(request: Request):
 
 @app.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(db_session)):
+    username=(username or "").strip()
     user = db.scalar(select(User).where(User.username == username))
     now=datetime.utcnow()
     if user and user.locked_until and user.locked_until > now:
@@ -485,22 +537,23 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             db.commit()
         _auth_event(db,username,"登入失敗","帳號不存在、停用或密碼錯誤")
         return RedirectResponse("/login?error=1", status_code=303)
-    user.failed_login_count=0; user.locked_until=None; user.last_login_at=now; db.commit(); _auth_event(db,user.username,"密碼驗證成功","等待 MFA" if user.mfa_enabled else "登入成功")
+    user.failed_login_count=0; user.locked_until=None; user.last_login_at=now; user.last_login_ip=_client_ip(request); user.updated_at=now; db.commit(); _auth_event(db,user.username,"密碼驗證成功","等待 MFA" if user.mfa_enabled else "登入成功")
     mfa_required = user.mfa_enabled or (APP_ENV == "production" and FORCE_PRIVILEGED_MFA and user.role in PRIVILEGED_ROLES)
     if mfa_required:
         response=RedirectResponse("/mfa" if user.mfa_enabled else "/mfa/setup", status_code=303)
         response.set_cookie("diamond_preauth", preauth_signer.dumps({"uid":user.id}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
         if not user.mfa_enabled:
             csrf=secrets.token_urlsafe(32)
-            response.set_cookie("diamond_session", signer.dumps({"uid":user.id,"mfa_verified":False}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
+            response.set_cookie("diamond_session", signer.dumps({"uid":user.id,"mfa_verified":False,"sv":int(user.session_version or 1)}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
             response.set_cookie("csrf_token", csrf, httponly=False, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
         return response
     return _issue_session(user)
 
 def _issue_session(user: User):
-    response=RedirectResponse("/", status_code=303)
+    target="/security?password_required=1" if user.must_change_password else "/"
+    response=RedirectResponse(target, status_code=303)
     csrf=secrets.token_urlsafe(32)
-    response.set_cookie("diamond_session", signer.dumps({"uid": user.id, "mfa_verified": True}), httponly=True, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
+    response.set_cookie("diamond_session", signer.dumps({"uid": user.id, "mfa_verified": True, "sv": int(user.session_version or 1)}), httponly=True, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
     response.set_cookie("csrf_token", csrf, httponly=False, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
     response.delete_cookie("diamond_preauth")
     return response
@@ -543,7 +596,7 @@ def mfa_setup_verify(request: Request, code: str=Form(...), db: Session=Depends(
 
 @app.post("/account/mfa/reset")
 def mfa_reset(db:Session=Depends(db_session),user:User=Depends(current_user)):
-    user.mfa_enabled=False; user.mfa_secret=""; db.commit(); audit(db,user,"重設","MFA","使用者自行重設")
+    user.mfa_enabled=False; user.mfa_secret=""; user.session_version=int(user.session_version or 1)+1; user.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"重設","MFA","使用者自行關閉 MFA；所有工作階段失效")
     return RedirectResponse("/logout",303)
 
 @app.get("/logout")
@@ -1138,7 +1191,7 @@ def sale_delete(sid:int,db:Session=Depends(db_session),user:User=Depends(current
 
 @app.get("/products", response_class=HTMLResponse)
 def products_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin","executive","manager")
+    authorize(user,"admin","executive","manager","sales")
     rows=list(db.scalars(select(Product).order_by(Product.name)))
     return templates.TemplateResponse("products.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows})
 
@@ -1438,53 +1491,109 @@ def portal_visit(cid:int,db:Session=Depends(db_session),user:User=Depends(curren
 @app.get("/security",response_class=HTMLResponse)
 def security_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
     recent=list(db.scalars(select(AuditLog).where(AuditLog.username==user.username).order_by(AuditLog.created_at.desc()).limit(20)))
-    return templates.TemplateResponse("security.html",{"request":request,"user":user,"company":COMPANY_NAME,"recent":recent,"force_mfa":FORCE_PRIVILEGED_MFA,"app_env":APP_ENV})
+    return templates.TemplateResponse("security.html",{"request":request,"user":user,"company":COMPANY_NAME,"recent":recent,"force_mfa":FORCE_PRIVILEGED_MFA,"app_env":APP_ENV,"password_min_length":PASSWORD_MIN_LENGTH})
+
+@app.post("/account/password")
+def account_password_change(current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    if not pwd.verify(current_password,user.password_hash):
+        raise HTTPException(400,"目前密碼錯誤")
+    if new_password != confirm_password:
+        raise HTTPException(400,"兩次新密碼不一致")
+    err=_password_error(new_password,user.username)
+    if err: raise HTTPException(400,err)
+    if pwd.verify(new_password,user.password_hash):
+        raise HTTPException(400,"新密碼不可與目前密碼相同")
+    user.password_hash=pwd.hash(new_password); user.password_changed_at=datetime.utcnow(); user.must_change_password=False; user.failed_login_count=0; user.locked_until=None; user.session_version=int(user.session_version or 1)+1; user.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"修改","密碼","使用者自行變更密碼並使其他工作階段失效")
+    r=RedirectResponse("/login?password_changed=1",303)
+    for name in ("diamond_session","diamond_preauth","csrf_token"): r.delete_cookie(name,path="/")
+    return r
 
 @app.get("/users",response_class=HTMLResponse)
-def users_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); rows=list(db.scalars(select(User).order_by(User.username))); employees=list(db.scalars(select(Employee).where(Employee.is_deleted==False).order_by(Employee.name)))
-    return templates.TemplateResponse("users.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":employees})
+def users_page(request:Request,status:str="all",role:str="all",db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin")
+    stmt=select(User).order_by(User.active.desc(),User.role,User.username)
+    if status=="active": stmt=stmt.where(User.active==True)
+    elif status=="inactive": stmt=stmt.where(User.active==False)
+    if role in ROLE_LABELS: stmt=stmt.where(User.role==role)
+    rows=list(db.scalars(stmt))
+    employees=list(db.scalars(select(Employee).where(Employee.is_deleted==False).order_by(Employee.region,Employee.name)))
+    mapped={u.employee_id:u.id for u in db.scalars(select(User).where(User.employee_id.is_not(None)))}
+    stats={"total":db.scalar(select(func.count(User.id))) or 0,"active":db.scalar(select(func.count(User.id)).where(User.active==True)) or 0,"locked":db.scalar(select(func.count(User.id)).where(User.locked_until.is_not(None),User.locked_until>datetime.utcnow())) or 0,"mfa":db.scalar(select(func.count(User.id)).where(User.mfa_enabled==True)) or 0}
+    return templates.TemplateResponse("users.html",{"request":request,"user":user,"company":COMPANY_NAME,"rows":rows,"employees":employees,"mapped":mapped,"stats":stats,"role_labels":ROLE_LABELS,"status_filter":status,"role_filter":role,"password_min_length":PASSWORD_MIN_LENGTH})
 
 @app.post("/users")
-def user_add(username:str=Form(...),full_name:str=Form(...),password:str=Form(...),role:str=Form(...),region:str=Form(...),employee_id:Optional[int]=Form(None),db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin")
-    if role not in {"sales","manager","executive","admin"}: raise HTTPException(400,"角色錯誤")
-    if region not in {"北區","中區","南區","全區"}: raise HTTPException(400,"區域錯誤")
-    if len(password)<10: raise HTTPException(400,"密碼至少 10 碼")
-    if db.scalar(select(User).where(User.username==username.strip())): raise HTTPException(400,"帳號已存在")
-    db.add(User(username=username.strip(),full_name=full_name,password_hash=pwd.hash(password),role=role,region=region,employee_id=employee_id,password_changed_at=datetime.utcnow())); db.commit(); audit(db,user,"新增","使用者",username)
-    return RedirectResponse("/users",303)
+def user_add(username:str=Form(...),full_name:str=Form(...),email:str=Form(""),password:str=Form(...),role:str=Form(...),region:str=Form(...),employee_id:Optional[int]=Form(None),admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password)
+    username=(username or "").strip(); full_name=(full_name or "").strip(); email=(email or "").strip()
+    role,region=_normalize_role_region(role,region)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{3,80}",username): raise HTTPException(400,"帳號僅可使用英數字、點、底線、連字號，至少 3 碼")
+    if not full_name: raise HTTPException(400,"姓名不可空白")
+    err=_password_error(password,username)
+    if err: raise HTTPException(400,err)
+    if db.scalar(select(User).where(func.lower(User.username)==username.lower())): raise HTTPException(400,"帳號已存在")
+    if employee_id:
+        emp=db.get(Employee,employee_id)
+        if not emp or emp.is_deleted: raise HTTPException(400,"對應員工不存在")
+        if db.scalar(select(User).where(User.employee_id==employee_id)): raise HTTPException(400,"此員工已綁定其他登入帳號")
+    if role=="sales" and not employee_id: raise HTTPException(400,"業務帳號必須綁定員工主檔")
+    target=User(username=username,full_name=full_name,email=email,password_hash=pwd.hash(password),role=role,region=region,employee_id=employee_id,password_changed_at=datetime.utcnow(),must_change_password=True,session_version=1,created_by=user.username,updated_at=datetime.utcnow())
+    db.add(target); db.commit(); audit(db,user,"新增","使用者",f"{username}｜{ROLE_LABELS[role]}｜{region}｜首次登入需改密碼")
+    return RedirectResponse("/users?created=1",303)
 
-@app.post("/users/{uid}/employee")
-def user_map_employee(uid:int,employee_id:Optional[int]=Form(None),db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); target=db.get(User,uid)
+@app.post("/users/{uid}/edit")
+def user_edit(uid:int,full_name:str=Form(...),email:str=Form(""),role:str=Form(...),region:str=Form(...),employee_id:Optional[int]=Form(None),admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password); target=db.get(User,uid)
     if not target: raise HTTPException(404,"帳號不存在")
-    target.employee_id=employee_id; db.commit(); audit(db,user,"修改","帳號綁定",f"{target.username} → employee_id={employee_id}")
-    return RedirectResponse("/users",303)
-
+    role,region=_normalize_role_region(role,region)
+    if target.id==user.id and role!="admin": raise HTTPException(400,"不能移除自己目前的系統管理員權限")
+    if employee_id:
+        emp=db.get(Employee,employee_id)
+        if not emp or emp.is_deleted: raise HTTPException(400,"對應員工不存在")
+        other=db.scalar(select(User).where(User.employee_id==employee_id,User.id!=uid))
+        if other: raise HTTPException(400,"此員工已綁定其他登入帳號")
+    if role=="sales" and not employee_id: raise HTTPException(400,"業務帳號必須綁定員工主檔")
+    before=f"{target.full_name}/{target.role}/{target.region}/emp={target.employee_id}"
+    target.full_name=(full_name or "").strip(); target.email=(email or "").strip(); target.role=role; target.region=region; target.employee_id=employee_id; target.updated_at=datetime.utcnow(); target.session_version=int(target.session_version or 1)+1
+    db.commit(); audit(db,user,"修改","帳號權限",f"{target.username}: {before} → {target.full_name}/{target.role}/{target.region}/emp={target.employee_id}；已使舊工作階段失效")
+    return RedirectResponse("/users?updated=1",303)
 
 @app.post("/users/{uid}/toggle")
-def user_toggle(uid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); target=db.get(User,uid)
+def user_toggle(uid:int,admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password); target=db.get(User,uid)
     if not target: raise HTTPException(404)
     if target.id==user.id and target.active: raise HTTPException(400,"不能停用自己的管理員帳號")
-    target.active=not target.active; db.commit(); audit(db,user,"啟用" if target.active else "停用","使用者",target.username)
+    target.active=not target.active; target.session_version=int(target.session_version or 1)+1; target.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"啟用" if target.active else "停用","使用者",f"{target.username}；所有既有工作階段失效")
+    return RedirectResponse("/users",303)
+
+@app.post("/users/{uid}/unlock")
+def user_unlock(uid:int,admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password); target=db.get(User,uid)
+    if not target: raise HTTPException(404)
+    target.failed_login_count=0; target.locked_until=None; target.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"解除鎖定","使用者",target.username)
+    return RedirectResponse("/users",303)
+
+@app.post("/users/{uid}/force-logout")
+def user_force_logout(uid:int,admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password); target=db.get(User,uid)
+    if not target: raise HTTPException(404)
+    target.session_version=int(target.session_version or 1)+1; target.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"強制登出","使用者",target.username)
     return RedirectResponse("/users",303)
 
 @app.post("/users/{uid}/mfa-reset")
-def admin_mfa_reset(uid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); target=db.get(User,uid)
+def admin_mfa_reset(uid:int,admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password); target=db.get(User,uid)
     if not target: raise HTTPException(404)
-    target.mfa_enabled=False; target.mfa_secret=""; db.commit(); audit(db,user,"重設","MFA",target.username)
+    target.mfa_enabled=False; target.mfa_secret=""; target.session_version=int(target.session_version or 1)+1; target.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"重設","MFA",f"{target.username}；既有工作階段失效")
     return RedirectResponse("/users",303)
 
 @app.post("/users/{uid}/password")
-def admin_password_reset(uid:int,password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
-    authorize(user,"admin"); target=db.get(User,uid)
+def admin_password_reset(uid:int,password:str=Form(...),admin_password:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin"); _reauth(user,admin_password); target=db.get(User,uid)
     if not target: raise HTTPException(404)
-    if len(password)<10: raise HTTPException(400,"密碼至少 10 碼")
-    target.password_hash=pwd.hash(password); target.password_changed_at=datetime.utcnow(); target.failed_login_count=0; target.locked_until=None; db.commit(); audit(db,user,"重設","密碼",target.username)
-    return RedirectResponse("/users",303)
+    err=_password_error(password,target.username)
+    if err: raise HTTPException(400,err)
+    target.password_hash=pwd.hash(password); target.password_changed_at=datetime.utcnow(); target.must_change_password=True; target.failed_login_count=0; target.locked_until=None; target.session_version=int(target.session_version or 1)+1; target.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"重設","密碼",f"{target.username}；下次登入強制改密碼；所有工作階段失效")
+    return RedirectResponse("/users?password_reset=1",303)
 
 @app.get("/audit",response_class=HTMLResponse)
 def audit_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):

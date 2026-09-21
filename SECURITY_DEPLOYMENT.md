@@ -1,52 +1,32 @@
-# v31 正式上線資安部署清單
+# Diamond KPI v34 正式環境資安部署
 
-## 1. Render Environment Variables
-正式環境至少設定：
-- `APP_ENV=production`
-- `SECRET_KEY`：64+ 字元隨機字串，禁止放 GitHub
-- `ADMIN_PASSWORD`：強密碼，禁止使用 `Admin123!`
-- `SEED_DEMO_DATA=false`
-- `FORCE_PRIVILEGED_MFA=false`
-- `LOGIN_MAX_FAILURES=5`
-- `LOGIN_LOCK_MINUTES=15`
-- `SESSION_MAX_AGE=28800`
+## 必做
+1. Render 設定 `APP_ENV=production`。
+2. `SECRET_KEY` 使用 Render Secret / generateValue，不可提交 GitHub。
+3. `ADMIN_PASSWORD` 使用強密碼並放在 Render Secret，不可提交 GitHub。
+4. `SEED_DEMO_DATA=false`。
+5. `FORCE_PRIVILEGED_MFA=false`（目前 MFA 為選配；如公司政策要強制主管 MFA 才改 true）。
+6. PostgreSQL 不對公網開放；`DATABASE_URL` 只由 Render Database 注入。
+7. 正式網域全程 HTTPS，Production 保留 HSTS / CSP / Secure Cookie。
+8. 正式資料庫使用具備自動備份 / PITR 能力的 PostgreSQL 方案；不要把 Free DB 當作正式營運的唯一資料副本。
+9. 至少每月做一次還原演練，確認 backup 不是只有「有檔案」而是真的能 restore。
+10. Production 與 Staging 使用不同資料庫、不同 SECRET_KEY、不同 Admin 密碼。
 
-`DATABASE_URL` 只由 Render Database connection string 注入，不寫入 repo。
+## 帳號管理標準流程
+- 到職：Admin 建立帳號 → 綁定員工 → 指定角色 / 區域 → 發一次性初始密碼 → 使用者首次登入強制改密碼。
+- 調職：Admin 修改角色 / 區域 → v34 立即使該帳號舊 session 失效。
+- 密碼遺失：Admin 重設臨時密碼 → 舊 session 全部失效 → 使用者下次登入強制改密碼。
+- 異常登入：Admin 可解除鎖定；若懷疑帳號外洩，先停用 + 強制登出，再重設密碼。
+- 離職：停用帳號，不刪除歷史員工 / 業績 / CRM 資料。
 
-## 2. 第一次部署 v31
-1. 先備份 Production PostgreSQL。
-2. 部署 v31 到 staging，確認登入、客戶、業績與 KPI 正常。
-3. 再部署 production。
-4. Admin 第一次登入會直接進入系統；若需要 MFA，可在「帳號安全」自行啟用。
-5. 在 Google Authenticator / Microsoft Authenticator 手動新增帳號，輸入畫面顯示的 secret。
-6. 輸入 6 位碼完成啟用。
-7. 為每一位 Executive / Manager 建立個人帳號，禁止共用 admin。
+## 權限原則
+- Sales：只限本人 employee_id。
+- Manager：只限 user.region。
+- Executive：全公司營運資料，不可管理帳號。
+- Admin：全公司 + 帳號權限管理。
+- 所有資料範圍在 FastAPI 後端檢查，不只靠 UI 隱藏。
 
-## 3. Staging / Production 分離
-- Production Web + Production PostgreSQL：正式資料。
-- Staging Web + Staging PostgreSQL：測試資料。
-- 兩邊使用不同 `SECRET_KEY`、不同資料庫、不同管理員密碼。
-- 新版本先進 staging，再 promotion 到 production。
-
-## 4. Backup / Restore
-repo 內提供：
-- `scripts/backup_postgres.sh`
-- `scripts/restore_postgres.sh`
-
-建議：每日備份、至少保留 30 天；每週把一份備份放到與 Production DB 不同的儲存位置。每季實際做一次 restore drill。
-
-## 5. 權限規則
-- Sales：自己的客戶 / daily performance / visit calendar。
-- Manager：自己區域。
-- Executive/Admin：全公司。
-- Product master：Sales 唯讀；Executive/Admin 可修改。
-- Audit Log：Admin / Executive 可讀；一般使用者不可刪除。
-
-## 6. 上線前測試
-- 嘗試以 Sales URL 修改其他 Sales 的 clinic_id / employee_id，應回 403。
-- Manager 嘗試寫入其他區域，應回 403。
-- 5 次錯誤密碼後確認暫鎖。
-- MFA 為選配；未啟用 MFA 不影響 Dashboard 登入。
-- POST 缺 CSRF token 應回 403。
-- 作廢 Sale 後歷史紀錄仍存在，但 KPI 不再計入。
-- Audit Log 應看到 username / IP / method / path。
+## 建議上線前再做
+- 使用公司 Google Workspace / Microsoft Entra ID SSO，可進一步降低自行管理密碼的風險。
+- 對外公開服務若流量變大，可在 Render 前增加 Cloudflare WAF / rate limiting。
+- 定期進行 OWASP ASVS / Top 10 檢查與第三方弱點掃描。
