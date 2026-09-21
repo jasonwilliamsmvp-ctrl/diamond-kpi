@@ -1424,7 +1424,8 @@ def _portal_employee(db:Session,user:User):
     return e
 
 @app.get("/sales-portal",response_class=HTMLResponse)
-def sales_portal(request:Request,month:Optional[str]=None,db:Session=Depends(db_session),user:User=Depends(current_user)):
+def sales_portal(request:Request,month:Optional[str]=None,tab:str="overview",db:Session=Depends(db_session),user:User=Depends(current_user)):
+    if tab not in {"overview","performance","customers","calendar"}: tab="overview"
     employee=_portal_employee(db,user)
     ref=_parse_month(month); today=date.today(); month_end=_month_end(ref)
     clinics=[]; perf=[]; clinic_rows=[]
@@ -1445,7 +1446,7 @@ def sales_portal(request:Request,month:Optional[str]=None,db:Session=Depends(db_
     for week in cal.monthdayscalendar(ref.year,ref.month):
         weeks.append([{"day":day,"visits":by_day.get(day,[])} for day in week])
     prev=_shift_month(ref,-1).strftime("%Y-%m"); nxt=_shift_month(ref,1).strftime("%Y-%m")
-    return templates.TemplateResponse("sales_portal.html",{"request":request,"user":user,"company":COMPANY_NAME,"employee":employee,"today":today,"ref":ref,"clinics":clinics,"products":products,"perf":perf,"totals":sums(perf),"today_totals":sums(today_rows),"clinic_rows":clinic_rows,"class_labels":CLASS_LABELS,"weeks":weeks,"prev_month":prev,"next_month":nxt})
+    return templates.TemplateResponse("sales_portal.html",{"request":request,"user":user,"company":COMPANY_NAME,"employee":employee,"today":today,"ref":ref,"clinics":clinics,"products":products,"perf":perf,"totals":sums(perf),"today_totals":sums(today_rows),"clinic_rows":clinic_rows,"class_labels":CLASS_LABELS,"weeks":weeks,"prev_month":prev,"next_month":nxt,"tab":tab})
 
 @app.post("/sales-portal/performance")
 def portal_performance(entry_date:date=Form(...),clinic_id:int=Form(...),product_id:int=Form(...),quantity:float=Form(0),sales_amount:float=Form(0),shipment_amount:float=Form(0),collection_amount:float=Form(0),note:str=Form(""),db:Session=Depends(db_session),user:User=Depends(current_user)):
@@ -1458,7 +1459,7 @@ def portal_performance(entry_date:date=Form(...),clinic_id:int=Form(...),product
     if any(float(v)<0 for v in vals): raise HTTPException(400,"數量與金額不得為負數")
     db.add(DailyPerformance(entry_date=entry_date,employee_id=employee.id,clinic_id=clinic.id,product_id=product.id,quantity=quantity,sales_amount=sales_amount,shipment_amount=shipment_amount,collection_amount=collection_amount,note=note.strip()))
     db.commit(); audit(db,user,"新增","每日業績",f"{entry_date} {clinic.name} 銷售={sales_amount:.0f} 出貨={shipment_amount:.0f} 收款={collection_amount:.0f}")
-    return RedirectResponse(f"/sales-portal?month={entry_date.strftime('%Y-%m')}",303)
+    return RedirectResponse(f"/sales-portal?tab=performance&month={entry_date.strftime('%Y-%m')}",303)
 
 @app.post("/sales-portal/clinics")
 def portal_clinic_add(code:str=Form(...),name:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),customer_class:str=Form("C"),db:Session=Depends(db_session),user:User=Depends(current_user)):
@@ -1469,7 +1470,7 @@ def portal_clinic_add(code:str=Form(...),name:str=Form(...),city:str=Form(...),c
     if db.scalar(select(Clinic).where(Clinic.code==code.strip())): raise HTTPException(400,"客戶代碼已存在")
     c=Clinic(code=code.strip(),name=name.strip(),region=employee.region,city=city.strip(),contact_person=contact_person.strip(),phone=phone.strip(),address=address.strip(),owner_employee_id=employee.id,status="有效客戶",customer_class=customer_class)
     db.add(c); db.commit(); audit(db,user,"新增","我的客戶",f"{c.code} {c.name} {customer_class}類")
-    return RedirectResponse("/sales-portal",303)
+    return RedirectResponse("/sales-portal?tab=customers",303)
 
 @app.post("/sales-portal/clinics/{cid}/class")
 def portal_clinic_class(cid:int,customer_class:str=Form(...),db:Session=Depends(db_session),user:User=Depends(current_user)):
@@ -1478,7 +1479,7 @@ def portal_clinic_class(cid:int,customer_class:str=Form(...),db:Session=Depends(
     customer_class=customer_class.upper()
     if customer_class not in CLASS_LABELS: raise HTTPException(400,"分類錯誤")
     before=c.customer_class; c.customer_class=customer_class; db.commit(); audit(db,user,"修改","客戶分類",f"{c.name} {before}→{customer_class}")
-    return RedirectResponse("/sales-portal",303)
+    return RedirectResponse("/sales-portal?tab=customers",303)
 
 @app.post("/sales-portal/clinics/{cid}/visit")
 def portal_visit(cid:int,db:Session=Depends(db_session),user:User=Depends(current_user)):
@@ -1486,7 +1487,24 @@ def portal_visit(cid:int,db:Session=Depends(db_session),user:User=Depends(curren
     if not employee or not c or c.owner_employee_id!=employee.id: raise HTTPException(403,"只能管理自己的客戶")
     today=date.today(); next_date=_next_visit_date(today,c.customer_class,today)
     db.add(Activity(activity_date=today,employee_id=employee.id,clinic_id=c.id,stage="拜訪",outcome="完成例行拜訪",next_action_date=next_date)); db.commit(); audit(db,user,"完成","拜訪",f"{c.name}，下次 {next_date}")
-    return RedirectResponse("/sales-portal",303)
+    return RedirectResponse("/sales-portal?tab=calendar",303)
+
+@app.get("/sales-portal/clinics/{cid}/edit",response_class=HTMLResponse)
+def portal_clinic_edit_page(cid:int,request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user); clinic=db.get(Clinic,cid)
+    if not employee or not clinic or clinic.owner_employee_id!=employee.id: raise HTTPException(403,"只能編輯自己的客戶")
+    return templates.TemplateResponse("sales_clinic_edit.html",{"request":request,"user":user,"company":COMPANY_NAME,"clinic":clinic,"class_labels":CLASS_LABELS})
+
+@app.post("/sales-portal/clinics/{cid}/edit")
+def portal_clinic_edit_save(cid:int,code:str=Form(...),name:str=Form(...),city:str=Form(...),contact_person:str=Form(""),phone:str=Form(""),address:str=Form(""),customer_class:str=Form("C"),db:Session=Depends(db_session),user:User=Depends(current_user)):
+    employee=_portal_employee(db,user); clinic=db.get(Clinic,cid)
+    if not employee or not clinic or clinic.owner_employee_id!=employee.id: raise HTTPException(403,"只能編輯自己的客戶")
+    if customer_class.upper() not in CLASS_LABELS: raise HTTPException(400,"客戶分類錯誤")
+    if not code.strip() or not name.strip() or not city.strip(): raise HTTPException(400,"必填欄位不可空白")
+    if db.scalar(select(Clinic).where(Clinic.code==code.strip(),Clinic.id!=cid)): raise HTTPException(400,"客戶代碼已存在")
+    clinic.code=code.strip();clinic.name=name.strip();clinic.city=city.strip();clinic.contact_person=contact_person.strip();clinic.phone=phone.strip();clinic.address=address.strip();clinic.customer_class=customer_class.upper()
+    db.commit();audit(db,user,"修改","我的客戶",f"{clinic.code} {clinic.name}")
+    return RedirectResponse("/sales-portal?tab=customers",303)
 
 @app.get("/security",response_class=HTMLResponse)
 def security_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
