@@ -1,5 +1,5 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ company }} KPI</title><link rel="stylesheet" href="/static/style.css"></head>
-<body><aside class="sidebar light-sidebar"><div class="brand light-brand"><img class="sidebar-company-logo" src="/static/diamond-logo.png?v=37" alt="晶鑽生醫 Diamond Biotechnology"></div><nav>
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ company }} KPI</title><link rel="stylesheet" href="/static/style.css?v=38"></head>
+<body><aside class="sidebar light-sidebar"><div class="brand light-brand"><img class="sidebar-company-logo" src="/static/diamond-logo.png?v=38" alt="晶鑽生醫 Diamond Biotechnology"></div><nav>
 {% if user.role == 'sales' %}
 <a class="{{ 'active' if request.url.path=='/sales-portal' and request.query_params.get('tab','overview')=='overview' else '' }}" href="/sales-portal?tab=overview">▣　我的業務總覽</a>
 <a class="{{ 'active' if request.query_params.get('tab')=='customers' or '/sales-portal/clinics/' in request.url.path else '' }}" href="/sales-portal?tab=customers">♧　我的客戶管理</a>

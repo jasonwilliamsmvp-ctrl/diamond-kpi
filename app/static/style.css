@@ -89,3 +89,8 @@ main,.kpi-grid,.kpi-grid>*{min-width:0}.kpi-panel{min-width:0}.kpi-panel table{t
 
 /* v37 official supplied logo in sidebar */
 .sidebar-company-logo{display:block;width:100%;max-width:205px;height:auto;object-fit:contain}.light-brand{padding:4px 2px 20px;min-width:0}.light-brand .sidebar-company-logo{flex-shrink:1}
+
+/* v38: keep the supplied wide company logo inside the sidebar header. */
+.light-sidebar .light-brand{width:100%;height:66px;min-height:66px;padding:8px 4px 14px;justify-content:flex-start;overflow:hidden;flex:0 0 auto}
+.light-sidebar .sidebar-company-logo{display:block;width:168px;max-width:100%;height:auto;max-height:34px;object-fit:contain;object-position:left center;flex:0 1 auto}
+@media(max-width:760px){.light-sidebar .light-brand{height:58px;min-height:58px}}
