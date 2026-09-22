@@ -86,3 +86,6 @@ main,.kpi-grid,.kpi-grid>*{min-width:0}.kpi-panel{min-width:0}.kpi-panel table{t
 
 /* v36 executive ranking */
 .executive-rankings{margin:20px 0}.ranking-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:12px}.ranking-panel{min-width:0}.ranking-panel .table-scroll{overflow-x:auto}.ranking-panel table{width:100%;min-width:420px}.ranking-panel td,.ranking-panel th{padding:12px 10px}.rank-money{text-align:right;white-space:nowrap}.rank-number{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#eaf0ff;color:#102d72;width:28px;height:28px;font-weight:700}.rank-track{height:5px;border-radius:5px;background:#e9edf6;margin-top:6px;overflow:hidden}.rank-track i{display:block;height:100%;background:#183777;border-radius:5px}.ranking-empty{text-align:center;color:#718096;padding:28px!important}.ranking-note{font-size:12px;color:#718096;margin:10px 2px}@media(max-width:1050px){.ranking-grid{grid-template-columns:1fr}}
+
+/* v37 official supplied logo in sidebar */
+.sidebar-company-logo{display:block;width:100%;max-width:205px;height:auto;object-fit:contain}.light-brand{padding:4px 2px 20px;min-width:0}.light-brand .sidebar-company-logo{flex-shrink:1}
