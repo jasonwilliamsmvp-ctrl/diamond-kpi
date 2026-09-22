@@ -94,3 +94,8 @@ main,.kpi-grid,.kpi-grid>*{min-width:0}.kpi-panel{min-width:0}.kpi-panel table{t
 .light-sidebar .light-brand{width:100%;height:66px;min-height:66px;padding:8px 4px 14px;justify-content:flex-start;overflow:hidden;flex:0 0 auto}
 .light-sidebar .sidebar-company-logo{display:block;width:168px;max-width:100%;height:auto;max-height:34px;object-fit:contain;object-position:left center;flex:0 1 auto}
 @media(max-width:760px){.light-sidebar .light-brand{height:58px;min-height:58px}}
+
+/* v39: hard-bound logo dimensions, prevent overlap even with old layout rules. */
+.light-sidebar{overflow:hidden}
+.light-sidebar .light-brand{box-sizing:border-box;width:100%;max-width:100%;height:76px;min-height:76px;overflow:hidden;padding:8px 0 16px;display:flex;align-items:center;justify-content:center}
+.light-sidebar .light-brand .sidebar-company-logo{display:block!important;width:190px!important;max-width:190px!important;height:32px!important;max-height:32px!important;object-fit:contain!important;flex:none!important}

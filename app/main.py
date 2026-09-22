@@ -831,7 +831,7 @@ def _executive_visual_context(db: Session, month_start: date, emps, user: User):
 
     # Region actual vs summed personal targets for selected month.
     regions=[]
-    for region in sorted({e.region for e in contributors}):
+    for region in sorted({e.region for e in contributors}, key=lambda name: ({"北區": 0, "中區": 1, "南區": 2}.get(name, 3), name)):
         remps=[e for e in contributors if e.region==region]
         rids=[e.id for e in remps]
         regions.append({"label":region, "actual":revenue_between(month_start,_month_end(month_start),rids), "target":sum(_personal_target(e) for e in remps)})
