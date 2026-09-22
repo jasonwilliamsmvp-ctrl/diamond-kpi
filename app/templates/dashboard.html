@@ -75,6 +75,23 @@ window.addEventListener('load',drawAll);let rt;window.addEventListener('resize',
   </div>
 </section>
 
+<section class="executive-rankings" aria-label="主管業績排行榜">
+  <div class="panelhead"><h2>業績排行榜</h2><span>{{ month_start.year }} 年 {{ month_start.month }} 月 · 已認列業績 · {{ '本區' if user.role=='manager' else '全公司' }}</span></div>
+  <div class="ranking-grid">
+    {% for title, items, label in [('業務業績 Top 10',rankings.employees,'業務'),('客戶業績 Top 10',rankings.clinics,'診所')] %}
+    <div class="panel ranking-panel">
+      <div class="panelhead"><h2>{{ title }}</h2><span>依金額排序</span></div>
+      <div class="table-scroll"><table><thead><tr><th>名次</th><th>{{ label }}</th><th>區域</th><th class="rank-money">銷售金額</th></tr></thead><tbody>
+      {% for r in items %}
+        <tr><td><span class="rank-number">{{ loop.index }}</span></td><td><b>{{ r.name }}</b><small class="subnote">{{ r.code }}</small></td><td>{{ r.region }}</td><td class="rank-money"><b>NT$ {{ '{:,.0f}'.format(r.amount) }}</b><div class="rank-track"><i style="width:{{ (r.amount / items[0].amount * 100) if items[0].amount else 0 }}%"></i></div></td></tr>
+      {% else %}<tr><td colspan="4" class="ranking-empty">本月尚無已認列業績</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="ranking-note">僅統計已認列的業績管理紀錄；每日業務登錄的銷售、出貨、收款不重複加總。歷史業績依原交易業務歸屬保留。</p>
+</section>
+
 <section class="kpi-cards">
   <div class="kpi-card"><span>本月團隊業績</span><strong>{{ '{:,.0f}'.format(revenue/10000) }} 萬</strong><small>目標 {{ '{:,.0f}'.format(target/10000) }} 萬</small><div class="ring-label {{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</div></div>
   <div class="kpi-card"><span>團隊達成率</span><strong class="{{ 'green-text' if rate>=100 else 'red-text' if rate<80 else 'yellow-text' }}">{{ '%.0f'|format(rate) }}%</strong><small>距目標差 {{ '{:,.0f}'.format([target-revenue,0]|max/10000) }} 萬</small><div class="status-line {{ 'green' if rate>=100 else 'red' if rate<80 else 'yellow' }}">● {{ '達標' if rate>=100 else '未達標' }}</div></div>

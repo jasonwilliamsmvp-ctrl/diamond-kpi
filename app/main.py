@@ -844,6 +844,40 @@ def _executive_visual_context(db: Session, month_start: date, emps, user: User):
     products=[{"label":name,"actual":float(amount or 0)} for name,amount in product_rows]
     return {"monthly":monthly,"yoy_monthly":yoy_monthly,"quarters":quarters,"regions":regions,"products":products}
 
+def _ranking_context(db: Session, user: User, month_start: date):
+    """Authorized sales and clinic rankings. Uses recognized Sale, not DailyPerformance,
+    to avoid counting daily entries twice against legacy sales. Deleted staff remain
+    attributable to historical transactions; current access is determined by region.
+    """
+    if user.role not in ("admin", "executive", "manager"):
+        return {"employees": [], "clinics": [], "period": "month", "metric": "sales"}
+    period = "month"
+    start, end = month_start, _month_end(month_start)
+    employee_filter = [Sale.sale_date >= start, Sale.sale_date <= end, Sale.status == "已認列"]
+    if user.role == "manager":
+        employee_filter.append(Employee.region == user.region)
+    employee_rows = db.execute(
+        select(Employee.id, Employee.name, Employee.employee_no, Employee.region,
+               func.coalesce(func.sum(Sale.amount), 0).label("amount"))
+        .join(Sale, Sale.employee_id == Employee.id)
+        .where(*employee_filter)
+        .group_by(Employee.id, Employee.name, Employee.employee_no, Employee.region)
+        .order_by(func.sum(Sale.amount).desc(), Employee.id.asc()).limit(10)
+    ).all()
+    clinic_rows = db.execute(
+        select(Clinic.id, Clinic.name, Clinic.code, Clinic.region,
+               func.coalesce(func.sum(Sale.amount), 0).label("amount"))
+        .join(Sale, Sale.clinic_id == Clinic.id)
+        .join(Employee, Sale.employee_id == Employee.id)
+        .where(*employee_filter)
+        .group_by(Clinic.id, Clinic.name, Clinic.code, Clinic.region)
+        .order_by(func.sum(Sale.amount).desc(), Clinic.id.asc()).limit(10)
+    ).all()
+    return {"employees": [{"name": r.name, "code": r.employee_no, "region": r.region, "amount": float(r.amount)} for r in employee_rows],
+            "clinics": [{"name": r.name, "code": r.code, "region": r.region, "amount": float(r.amount)} for r in clinic_rows],
+            "period": period, "metric": "sales"}
+
+
 def kpi_context(db: Session, user: User, month: Optional[str] = None):
     month_start=_parse_month(month)
     month_end=_month_end(month_start)
@@ -962,9 +996,10 @@ def kpi_context(db: Session, user: User, month: Optional[str] = None):
     next_month=_shift_month(month_start,1).strftime("%Y-%m")
     company_growth=_company_growth_context(db,month_start)
     executive_visual=_executive_visual_context(db,month_start,emps,user)
+    rankings=_ranking_context(db,user,month_start)
     return {
         "month_start":month_start,"month_key":month_key,"prev_month":prev_month,"next_month":next_month,
-        "company_growth":company_growth,"executive_visual":executive_visual,
+        "company_growth":company_growth,"executive_visual":executive_visual,"rankings":rankings,
         "revenue":revenue,"target":target,"rate":rate,"gp":gp,"margin":gp/revenue*100 if revenue else 0,
         "avg_value":avg_value,"avg_target":avg_target,"crm_complete":crm_complete,"new_ordering":new_ordering,"visits":visits,
         "sales_kpis":sales_kpis,"crm_kpis":crm_kpis,"by_emp":by_emp,"warning_count":warning_count,"yellow_count":yellow_count,
