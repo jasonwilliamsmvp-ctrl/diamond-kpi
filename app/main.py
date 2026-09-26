@@ -14,6 +14,8 @@ import hmac
 import struct
 import time
 import re
+import urllib.request
+import urllib.error
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse, Response
@@ -191,6 +193,8 @@ class AuditLog(Base):
     ip_address: Mapped[str] = mapped_column(String(64), default="")
     method: Mapped[str] = mapped_column(String(12), default="")
     path: Mapped[str] = mapped_column(String(255), default="")
+    prev_hash: Mapped[str] = mapped_column(String(64), default="")
+    record_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 signer = URLSafeSerializer(SECRET_KEY, salt="diamond-session")
@@ -200,8 +204,11 @@ PRIVILEGED_ROLES = {"admin", "executive", "manager"}
 LOGIN_MAX_FAILURES = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
 LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", "28800"))
+SESSION_IDLE_SECONDS = int(os.getenv("SESSION_IDLE_SECONDS", "1800"))
 FORCE_PRIVILEGED_MFA = os.getenv("FORCE_PRIVILEGED_MFA", "false").lower() == "true"
 PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", "10"))
+SECURITY_ALERT_WEBHOOK_URL = os.getenv("SECURITY_ALERT_WEBHOOK_URL", "").strip()
+SECURITY_ALERT_FAILURE_THRESHOLD = int(os.getenv("SECURITY_ALERT_FAILURE_THRESHOLD", "5"))
 ROLE_LABELS = {"sales":"業務","manager":"區域經理","executive":"高階主管","admin":"系統管理員"}
 
 def _password_error(password: str, username: str = "") -> str:
@@ -288,6 +295,11 @@ def current_user(request: Request, db: Session = Depends(db_session)) -> User:
         raise HTTPException(401)
     if int(data.get("sv", 0) or 0) != int(user.session_version or 1):
         raise HTTPException(401)
+    now_ts = int(time.time())
+    if now_ts - int(data.get("iat", now_ts)) > SESSION_MAX_AGE:
+        raise HTTPException(401)
+    if now_ts - int(data.get("ls", now_ts)) > SESSION_IDLE_SECONDS:
+        raise HTTPException(401)
     if user.must_change_password and request.url.path not in {"/security","/account/password","/logout"}:
         raise HTTPException(427, "password change required")
     mfa_required = user.mfa_enabled or (APP_ENV == "production" and FORCE_PRIVILEGED_MFA and user.role in PRIVILEGED_ROLES)
@@ -296,11 +308,29 @@ def current_user(request: Request, db: Session = Depends(db_session)) -> User:
             raise HTTPException(428, "MFA required")
     return user
 
-def audit(db: Session, user: User, action: str, entity: str, detail: str = ""):
+def _append_audit(db: Session, username: str, action: str, entity: str, detail: str = ""):
     meta=_request_meta.get({})
-    db.add(AuditLog(username=user.username, action=action, entity=entity, detail=detail[:500],
-                    ip_address=meta.get("ip",""), method=meta.get("method",""), path=meta.get("path","")))
+    prev=db.scalar(select(AuditLog).order_by(AuditLog.id.desc()).limit(1))
+    prev_hash=(prev.record_hash if prev and prev.record_hash else "")
+    created=datetime.utcnow()
+    payload="|".join([created.isoformat(),(username or "unknown")[:80],action,entity,detail[:500],meta.get("ip",""),meta.get("method",""),meta.get("path",""),prev_hash])
+    record_hash=hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    db.add(AuditLog(created_at=created, username=(username or "unknown")[:80], action=action, entity=entity, detail=detail[:500],
+                    ip_address=meta.get("ip",""), method=meta.get("method",""), path=meta.get("path",""), prev_hash=prev_hash, record_hash=record_hash))
     db.commit()
+
+def audit(db: Session, user: User, action: str, entity: str, detail: str = ""):
+    _append_audit(db,user.username,action,entity,detail)
+
+def _security_alert(subject: str, detail: str):
+    if not SECURITY_ALERT_WEBHOOK_URL:
+        return
+    try:
+        body=json.dumps({"text":f"[Diamond KPI] {subject}\n{detail}","subject":subject,"detail":detail,"timestamp":datetime.utcnow().isoformat()+"Z"},ensure_ascii=False).encode("utf-8")
+        req=urllib.request.Request(SECURITY_ALERT_WEBHOOK_URL,data=body,headers={"Content-Type":"application/json"},method="POST")
+        urllib.request.urlopen(req,timeout=3).read(1)
+    except Exception:
+        pass
 
 def authorize(user: User, *roles: str):
     if user.role not in roles:
@@ -351,6 +381,18 @@ async def security_middleware(request: Request, call_next):
                     return {"type":"http.request","body":body,"more_body":False}
                 request._receive=receive
         response=await call_next(request)
+        # Sliding idle timeout: refresh last-seen only for an already authenticated session.
+        session_token=request.cookies.get("diamond_session")
+        if session_token and response.status_code < 400:
+            try:
+                session_data=signer.loads(session_token)
+                now_ts=int(time.time())
+                issued=int(session_data.get("iat", now_ts))
+                if now_ts-issued <= SESSION_MAX_AGE:
+                    session_data["ls"]=now_ts
+                    response.set_cookie("diamond_session", signer.dumps(session_data), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=min(SESSION_MAX_AGE, max(60, SESSION_IDLE_SECONDS)))
+            except BadSignature:
+                pass
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["X-Frame-Options"]="DENY"
         response.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
@@ -376,6 +418,13 @@ async def mfa_required_handler(request: Request, exc):
 
 @app.on_event("startup")
 def startup():
+    if APP_ENV == "production":
+        if SECRET_KEY == "dev-secret-change-me" or len(SECRET_KEY) < 32:
+            raise RuntimeError("Production requires a strong SECRET_KEY (32+ characters) from environment secrets")
+        if engine.dialect.name != "postgresql":
+            raise RuntimeError("Production requires PostgreSQL; SQLite is not permitted")
+        if SEED_DEMO_DATA:
+            raise RuntimeError("SEED_DEMO_DATA must be false in production")
     Base.metadata.create_all(engine)
     # Lightweight schema migration for existing Render/PostgreSQL databases.
     # create_all() does not add new columns to an existing table.
@@ -406,6 +455,8 @@ def startup():
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(64) DEFAULT ''"))
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS method VARCHAR(12) DEFAULT ''"))
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS path VARCHAR(255) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(64) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS record_hash VARCHAR(64) DEFAULT ''"))
         elif engine.dialect.name == "sqlite":
             cols = {r[1] for r in conn.execute(text("PRAGMA table_info(employees)"))}
             for col, default in [("crm_target",100),("visit_target",40),("new_clinic_target",2),("new_product_target",1)]:
@@ -424,7 +475,7 @@ def startup():
                 if col not in user_cols:
                     conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
             audit_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audit_logs)"))}
-            for col, ddl in [("ip_address","TEXT DEFAULT ''"),("method","TEXT DEFAULT ''"),("path","TEXT DEFAULT ''")]:
+            for col, ddl in [("ip_address","TEXT DEFAULT ''"),("method","TEXT DEFAULT ''"),("path","TEXT DEFAULT ''"),("prev_hash","TEXT DEFAULT ''"),("record_hash","TEXT DEFAULT ''")]:
                 if col not in audit_cols:
                     conn.execute(text(f"ALTER TABLE audit_logs ADD COLUMN {col} {ddl}"))
 
@@ -512,9 +563,7 @@ def health():
     return {"status": "ok", "service": "diamond-kpi"}
 
 def _auth_event(db:Session, username:str, action:str, detail:str=""):
-    meta=_request_meta.get({})
-    db.add(AuditLog(username=(username or "unknown")[:80], action=action, entity="登入安全", detail=detail[:500], ip_address=meta.get("ip",""), method=meta.get("method",""), path=meta.get("path","")))
-    db.commit()
+    _append_audit(db,username,action,"登入安全",detail)
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
@@ -534,6 +583,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             if user.failed_login_count >= LOGIN_MAX_FAILURES:
                 user.locked_until=now+timedelta(minutes=LOGIN_LOCK_MINUTES)
                 user.failed_login_count=0
+                _security_alert("帳號因登入失敗被暫時鎖定", f"帳號: {username}; IP: {_client_ip(request)}; 鎖定 {LOGIN_LOCK_MINUTES} 分鐘")
             db.commit()
         _auth_event(db,username,"登入失敗","帳號不存在、停用或密碼錯誤")
         return RedirectResponse("/login?error=1", status_code=303)
@@ -544,7 +594,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         response.set_cookie("diamond_preauth", preauth_signer.dumps({"uid":user.id}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
         if not user.mfa_enabled:
             csrf=secrets.token_urlsafe(32)
-            response.set_cookie("diamond_session", signer.dumps({"uid":user.id,"mfa_verified":False,"sv":int(user.session_version or 1)}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
+            response.set_cookie("diamond_session", signer.dumps({"uid":user.id,"mfa_verified":False,"sv":int(user.session_version or 1),"iat":int(time.time()),"ls":int(time.time())}), httponly=True, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
             response.set_cookie("csrf_token", csrf, httponly=False, secure=(APP_ENV=="production"), samesite="strict", max_age=600)
         return response
     return _issue_session(user)
@@ -553,7 +603,7 @@ def _issue_session(user: User):
     target="/security?password_required=1" if user.must_change_password else "/"
     response=RedirectResponse(target, status_code=303)
     csrf=secrets.token_urlsafe(32)
-    response.set_cookie("diamond_session", signer.dumps({"uid": user.id, "mfa_verified": True, "sv": int(user.session_version or 1)}), httponly=True, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
+    response.set_cookie("diamond_session", signer.dumps({"uid": user.id, "mfa_verified": True, "sv": int(user.session_version or 1), "iat": int(time.time()), "ls": int(time.time())}), httponly=True, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
     response.set_cookie("csrf_token", csrf, httponly=False, secure=(APP_ENV == "production"), samesite="strict", max_age=SESSION_MAX_AGE)
     response.delete_cookie("diamond_preauth")
     return response
@@ -1028,6 +1078,7 @@ def export_kpi(month: Optional[str]=None, db:Session=Depends(db_session), user:U
     for r in ctx["by_emp"]:
         w.writerow([ctx["month_key"],r["name"],r["title"],r["region"],r["target"],r["amount"],round(r["revenue_rate"],1),round(r["crm_rate"],1),r["status_text"],r["achieved_months"],r["missed_months"],r["action"]])
     data=out.getvalue().encode("utf-8-sig")
+    audit(db,user,"匯出","KPI",f"月份={ctx['month_key']}; rows={len(ctx['by_emp'])}")
     return StreamingResponse(io.BytesIO(data),media_type="text/csv",headers={"Content-Disposition":f"attachment; filename=diamond_kpi_{ctx['month_key']}.csv"})
 
 @app.get("/kpi-actions", response_class=HTMLResponse)
@@ -1648,6 +1699,25 @@ def admin_password_reset(uid:int,password:str=Form(...),admin_password:str=Form(
     target.password_hash=pwd.hash(password); target.password_changed_at=datetime.utcnow(); target.must_change_password=True; target.failed_login_count=0; target.locked_until=None; target.session_version=int(target.session_version or 1)+1; target.updated_at=datetime.utcnow(); db.commit(); audit(db,user,"重設","密碼",f"{target.username}；下次登入強制改密碼；所有工作階段失效")
     return RedirectResponse("/users?password_reset=1",303)
 
+def _verify_audit_chain(db: Session):
+    rows=list(db.scalars(select(AuditLog).order_by(AuditLog.id.asc())))
+    prev=""; checked=0
+    for r in rows:
+        if not r.record_hash:
+            continue  # legacy v42 records predate hash chaining
+        payload="|".join([r.created_at.isoformat(),r.username,r.action,r.entity,r.detail or "",r.ip_address or "",r.method or "",r.path or "",r.prev_hash or ""])
+        expected=hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        if (r.prev_hash or "") != prev or not secrets.compare_digest(expected,r.record_hash):
+            return False, checked, r.id
+        prev=r.record_hash; checked+=1
+    return True,checked,None
+
+@app.get("/security-status")
+def security_status(db:Session=Depends(db_session),user:User=Depends(current_user)):
+    authorize(user,"admin")
+    ok,checked,bad_id=_verify_audit_chain(db)
+    return {"status":"ok" if ok else "warning","audit_chain_ok":ok,"audit_records_verified":checked,"first_bad_audit_id":bad_id,"database":"postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite","mfa_forced":FORCE_PRIVILEGED_MFA,"alert_webhook_configured":bool(SECURITY_ALERT_WEBHOOK_URL),"session_idle_seconds":SESSION_IDLE_SECONDS,"session_max_age":SESSION_MAX_AGE}
+
 @app.get("/audit",response_class=HTMLResponse)
 def audit_page(request:Request,db:Session=Depends(db_session),user:User=Depends(current_user)):
     authorize(user,"admin","executive"); rows=list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(500)))
@@ -1658,9 +1728,11 @@ def export_sales(db:Session=Depends(db_session),user:User=Depends(current_user))
     out=io.StringIO(); w=csv.writer(out); w.writerow(["日期","員工編號","員工","產品代碼","產品","診所代碼","診所","數量","金額","毛利","狀態","備註"])
     ids=_visible_employee_ids(db,user)
     stmt=select(Sale).where(Sale.employee_id.in_(ids)).order_by(Sale.sale_date) if ids else select(Sale).where(Sale.id==-1)
+    count=0
     for s in db.scalars(stmt):
-        w.writerow([s.sale_date,s.employee.employee_no,s.employee.name,s.product.code,s.product.name,s.clinic.code,s.clinic.name,s.quantity,s.amount,s.gross_profit,s.status,s.note])
+        w.writerow([s.sale_date,s.employee.employee_no,s.employee.name,s.product.code,s.product.name,s.clinic.code,s.clinic.name,s.quantity,s.amount,s.gross_profit,s.status,s.note]); count+=1
     data=out.getvalue().encode("utf-8-sig")
+    audit(db,user,"匯出","業績",f"rows={count}; scope={user.role}/{user.region}")
     return StreamingResponse(io.BytesIO(data),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=diamond_sales.csv"})
 
 def _read_tabular_upload(filename: str, raw: bytes):
